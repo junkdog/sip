@@ -8,7 +8,8 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, ValueEnum};
+use clap::{CommandFactory, Parser, ValueEnum};
+use clap_complete::Shell;
 use jiff::tz::TimeZone;
 use jiff::{Timestamp, ToSpan, civil};
 
@@ -45,7 +46,7 @@ struct Cli {
 
     /// Show subagents as separate rows (with --by session)
     #[arg(long)]
-    split_agents: bool,
+    split_subagents: bool,
 
     /// Show only the N most recent rows; 0 shows everything
     #[arg(short = 'n', long, default_value_t = 30)]
@@ -56,16 +57,20 @@ struct Cli {
     render: Renderer,
 
     /// PNG output path for the gnuplot renderer
-    #[arg(short, long)]
+    #[arg(short, long, value_hint = clap::ValueHint::FilePath)]
     output: Option<PathBuf>,
 
     /// Claude Code transcript directory [default: $CLAUDE_CONFIG_DIR/projects or ~/.claude/projects]
-    #[arg(long)]
+    #[arg(long, value_hint = clap::ValueHint::DirPath)]
     dir: Option<PathBuf>,
 
     /// Disable colors
     #[arg(long)]
     no_color: bool,
+
+    /// Print a shell completion script and exit (e.g. `sip --completions zsh > ~/.zfunc/_sip`)
+    #[arg(long, value_name = "SHELL", exclusive = true)]
+    completions: Option<Shell>,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -76,6 +81,10 @@ enum Renderer {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Some(shell) = cli.completions {
+        clap_complete::generate(shell, &mut Cli::command(), "sip", &mut std::io::stdout());
+        return Ok(());
+    }
 
     let dir = cli.dir.clone().unwrap_or_else(source::default_dir);
     let data = source::load(&dir)?;
@@ -92,7 +101,7 @@ fn main() -> Result<()> {
         .filter(|t| cli.model.as_ref().is_none_or(|m| t.model.contains(m.as_str())))
         .collect();
 
-    let mut rows = aggregate::aggregate(&data, &turns, cli.by, cli.split_agents);
+    let mut rows = aggregate::aggregate(&data, &turns, cli.by, cli.split_subagents);
     if cli.limit > 0 && rows.len() > cli.limit {
         rows.drain(..rows.len() - cli.limit);
     }

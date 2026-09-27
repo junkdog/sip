@@ -28,7 +28,8 @@ pub struct Row {
     pub models: Vec<(String, usize)>,
     /// Largest context seen on a single call (main thread preferred over subagents).
     pub peak_context: u64,
-    pub window: u64,
+    /// Context window of the peak call's session; `None` for days, which span sessions.
+    pub window: Option<u64>,
 }
 
 impl Row {
@@ -52,14 +53,14 @@ struct Acc {
     peak_any: (u64, u64),
 }
 
-pub fn aggregate(data: &Transcripts, turns: &[&Turn], by: GroupBy, split_agents: bool) -> Vec<Row> {
+pub fn aggregate(data: &Transcripts, turns: &[&Turn], by: GroupBy, split_subagents: bool) -> Vec<Row> {
     let tz = TimeZone::system();
     let mut groups: HashMap<String, Acc> = HashMap::new();
 
     for turn in turns {
         let key = match by {
             GroupBy::Day => turn.ts.to_zoned(tz.clone()).date().to_string(),
-            GroupBy::Session => match (&turn.agent, split_agents) {
+            GroupBy::Session => match (&turn.agent, split_subagents) {
                 (Some(agent), true) => format!("{}/{agent}", turn.session),
                 _ => turn.session.clone(),
             },
@@ -88,7 +89,11 @@ pub fn aggregate(data: &Transcripts, turns: &[&Turn], by: GroupBy, split_agents:
             let start = acc.start.expect("group has at least one turn");
             let label = match by {
                 GroupBy::Day => key,
-                GroupBy::Session => start.to_zoned(tz.clone()).strftime("%m-%d %H:%M").to_string(),
+                GroupBy::Session => {
+                    let time = start.to_zoned(tz.clone()).strftime("%m-%d %H:%M").to_string();
+                    // split-out subagent rows are keyed "<session>/<agent>"
+                    if key.contains('/') { format!("{time} ↳") } else { format!("{time}  ") }
+                }
             };
             let mut models: Vec<_> = acc.models.into_iter().collect();
             models.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
@@ -101,7 +106,7 @@ pub fn aggregate(data: &Transcripts, turns: &[&Turn], by: GroupBy, split_agents:
                 turns: acc.turns,
                 models,
                 peak_context,
-                window,
+                window: (by == GroupBy::Session).then_some(window),
             }
         })
         .collect();

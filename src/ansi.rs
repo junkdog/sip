@@ -58,7 +58,8 @@ pub fn render(rows: &[Row], categories: &[Category], style: &Style) -> String {
     if project_w > 0 {
         let _ = write!(header, "{:project_w$}  ", "");
     }
-    let _ = write!(header, "{:model_w$}  {:>ctx_w$}  ", "model", "context");
+    let ctx_header = if rows.iter().any(|r| r.window.is_some()) { "context" } else { "peak ctx" };
+    let _ = write!(header, "{:model_w$}  {:>ctx_w$}  ", "model", ctx_header);
     let head = header.clone();
     out.push_str(&style.paint(gruvbox::GRAY, &head));
     for &c in categories {
@@ -130,14 +131,18 @@ fn bar(value: u64, max: u64, width: usize, color: Rgb, style: &Style) -> String 
 }
 
 fn context_cell(row: &Row, width: usize, style: &Style) -> String {
-    let ratio = row.peak_context as f64 / row.window.max(1) as f64;
+    let peak = human(row.peak_context);
+    let Some(window) = row.window else {
+        return style.paint(gruvbox::FG4, &format!("{peak:>width$}"));
+    };
+
+    let ratio = row.peak_context as f64 / window.max(1) as f64;
     let color = match ratio {
         r if r < 0.5 => gruvbox::GREEN,
         r if r < 0.8 => gruvbox::YELLOW,
         _ => gruvbox::RED,
     };
-    let peak = human(row.peak_context);
-    let window = human(row.window);
+    let window = human(window);
     let pad = width.saturating_sub(peak.len() + 1 + window.len());
     format!(
         "{}{}{}",
