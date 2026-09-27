@@ -14,13 +14,14 @@ const PANEL_HEIGHT: usize = 260;
 /// Vertical pixels between panels, so adjacent y tick labels don't collide.
 const PANEL_GAP: f64 = 28.0;
 
-pub fn render(rows: &[Row], categories: &[Category], output: &Path, title: &str) -> Result<()> {
+/// `transparent` drops the background fill, for images drawn over the terminal's own background.
+pub fn render(rows: &[Row], categories: &[Category], output: &Path, title: &str, transparent: bool) -> Result<()> {
     let data_path = output.with_extension("dat");
     let script_path = output.with_extension("gnuplot");
 
     fs::write(&data_path, data(rows))
         .with_context(|| format!("writing {}", data_path.display()))?;
-    fs::write(&script_path, script(rows, categories, &data_path, output, title))
+    fs::write(&script_path, script(rows, categories, &data_path, output, title, transparent))
         .with_context(|| format!("writing {}", script_path.display()))?;
 
     let result = Command::new("gnuplot")
@@ -33,19 +34,23 @@ pub fn render(rows: &[Row], categories: &[Category], output: &Path, title: &str)
     Ok(())
 }
 
-/// Shows the PNG inline when running inside kitty; returns false otherwise.
-pub fn display_inline(png: &Path) -> Result<bool> {
+/// True when running inside kitty with stdout attached to it, so images can be shown inline.
+pub fn can_display_inline() -> bool {
     let in_kitty = std::env::var_os("KITTY_WINDOW_ID").is_some()
         || std::env::var("TERM").is_ok_and(|t| t == "xterm-kitty");
-    if !in_kitty || !std::io::stdout().is_terminal() {
-        return Ok(false);
-    }
+    in_kitty && std::io::stdout().is_terminal()
+}
+
+pub fn display_inline(png: &Path) -> Result<()> {
     let status = Command::new("kitty")
         .args(["+kitten", "icat", "--align", "left"])
         .arg(png)
         .status()
         .context("failed to run `kitty +kitten icat`")?;
-    Ok(status.success())
+    if !status.success() {
+        bail!("`kitty +kitten icat` exited with {status}");
+    }
+    Ok(())
 }
 
 pub fn default_output() -> PathBuf {
@@ -65,7 +70,14 @@ fn data(rows: &[Row]) -> String {
     out
 }
 
-fn script(rows: &[Row], categories: &[Category], data: &Path, output: &Path, title: &str) -> String {
+fn script(
+    rows: &[Row],
+    categories: &[Category],
+    data: &Path,
+    output: &Path,
+    title: &str,
+    transparent: bool,
+) -> String {
     let n = categories.len();
     let width = (rows.len() * 28 + 260).clamp(1000, 3200);
     let height = n * PANEL_HEIGHT + 220;
@@ -76,7 +88,7 @@ fn script(rows: &[Row], categories: &[Category], data: &Path, output: &Path, tit
 
     let hex = |c: crate::model::Rgb| c.hex();
     let mut s = format!(
-        r#"set terminal pngcairo size {width},{height} enhanced font 'monospace,11' background '{bg}'
+        r#"set terminal pngcairo size {width},{height} enhanced font 'monospace,11' {background}
 set output '{output}'
 set border 3 lc rgb '{fg4}' lw 1.2
 set grid ytics lc rgb '{bg1}' lw 1
@@ -92,7 +104,11 @@ set lmargin 12
 set rmargin 4
 set multiplot title "{{/:Bold {title}}}" font ',15' textcolor rgb '{yellow}'
 "#,
-        bg = hex(gruvbox::BG),
+        background = if transparent {
+            "transparent".to_string()
+        } else {
+            format!("background '{}'", hex(gruvbox::BG))
+        },
         fg = hex(gruvbox::FG),
         fg4 = hex(gruvbox::FG4),
         bg1 = hex(gruvbox::BG1),

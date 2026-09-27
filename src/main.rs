@@ -129,8 +129,13 @@ fn main() -> Result<()> {
                 GroupBy::Day => "Claude Code token usage per day",
                 GroupBy::Session => "Claude Code token usage per session",
             };
-            gnuplot::render(&rows, &categories, &output, title)?;
-            if !gnuplot::display_inline(&output)? {
+            // only the throwaway inline image goes transparent; files written with -o keep the background
+            let inline = gnuplot::can_display_inline();
+            let transparent = inline && cli.output.is_none();
+            gnuplot::render(&rows, &categories, &output, title, transparent)?;
+            if inline {
+                gnuplot::display_inline(&output)?;
+            } else {
                 println!("{}", output.display());
             }
         }
