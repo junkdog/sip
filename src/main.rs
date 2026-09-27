@@ -121,7 +121,7 @@ fn main() -> Result<()> {
                 && std::io::stdout().is_terminal();
             let width = terminal_size::terminal_size().map_or(120, |(w, _)| w.0 as usize);
             let style = ansi::Style { color, width };
-            print!("{}", ansi::render(&rows, &categories, &style));
+            print!("{}", ansi::render(&rows, &categories, cli.by, &style));
         }
         Renderer::Gnuplot => {
             let output = cli.output.clone().unwrap_or_else(gnuplot::default_output);
