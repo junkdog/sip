@@ -24,6 +24,10 @@ pub struct Row {
     pub start: Timestamp,
     pub tokens: Tokens,
     pub turns: usize,
+    /// Estimated USD across the calls with a known price.
+    pub cost: f64,
+    /// Calls whose model has no known price, so `cost` is a lower bound.
+    pub unpriced: usize,
     /// Model -> number of calls, most used first.
     pub models: Vec<(String, usize)>,
     /// Largest context seen on a single call (main thread preferred over subagents).
@@ -48,6 +52,8 @@ struct Acc {
     start: Option<Timestamp>,
     tokens: Tokens,
     turns: usize,
+    cost: f64,
+    unpriced: usize,
     models: HashMap<String, usize>,
     peak_main: (u64, u64),
     peak_any: (u64, u64),
@@ -71,6 +77,10 @@ pub fn aggregate(data: &Transcripts, turns: &[&Turn], by: GroupBy, split_subagen
         acc.start = Some(acc.start.map_or(turn.ts, |s| s.min(turn.ts)));
         acc.tokens += turn.tokens;
         acc.turns += 1;
+        match turn.cost {
+            Some(c) => acc.cost += c,
+            None => acc.unpriced += 1,
+        }
         *acc.models.entry(turn.model.clone()).or_default() += 1;
 
         let ctx = turn.tokens.context();
@@ -104,6 +114,8 @@ pub fn aggregate(data: &Transcripts, turns: &[&Turn], by: GroupBy, split_subagen
                 start,
                 tokens: acc.tokens,
                 turns: acc.turns,
+                cost: acc.cost,
+                unpriced: acc.unpriced,
                 models,
                 peak_context,
                 window: (by == GroupBy::Session).then_some(window),

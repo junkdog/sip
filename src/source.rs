@@ -13,6 +13,7 @@ use serde::de::IgnoredAny;
 use walkdir::WalkDir;
 
 use crate::model::{Category, Tokens};
+use crate::pricing::{self, Usage as Billed};
 
 /// One deduplicated assistant API call.
 #[derive(Debug, Clone)]
@@ -24,6 +25,8 @@ pub struct Turn {
     pub cwd: String,
     pub model: String,
     pub tokens: Tokens,
+    /// Estimated USD; `None` when the model has no known price.
+    pub cost: Option<f64>,
 }
 
 #[derive(Debug, Default)]
@@ -64,6 +67,15 @@ struct Usage {
     cache_creation_input_tokens: u64,
     #[serde(default)]
     cache_read_input_tokens: u64,
+    cache_creation: Option<CacheCreation>,
+}
+
+#[derive(Deserialize)]
+struct CacheCreation {
+    #[serde(default)]
+    ephemeral_5m_input_tokens: u64,
+    #[serde(default)]
+    ephemeral_1h_input_tokens: u64,
 }
 
 pub fn default_dir() -> PathBuf {
@@ -167,6 +179,18 @@ fn to_turn(entry: &Entry) -> Option<Turn> {
     if model.starts_with('<') {
         return None; // "<synthetic>" placeholder messages
     }
+    // without the TTL breakdown, cache writes are assumed to be the default 5 minutes
+    let (cache_write_5m, cache_write_1h) = match &usage.cache_creation {
+        Some(c) => (c.ephemeral_5m_input_tokens, c.ephemeral_1h_input_tokens),
+        None => (usage.cache_creation_input_tokens, 0),
+    };
+    let cost = pricing::cost(&model, &Billed {
+        input: usage.input_tokens,
+        output: usage.output_tokens,
+        cache_write_5m,
+        cache_write_1h,
+        cache_read: usage.cache_read_input_tokens,
+    });
     Some(Turn {
         ts: entry.timestamp?,
         session: entry.session_id.clone()?,
@@ -179,5 +203,6 @@ fn to_turn(entry: &Entry) -> Option<Turn> {
             usage.cache_creation_input_tokens,
             usage.cache_read_input_tokens,
         ),
+        cost,
     })
 }

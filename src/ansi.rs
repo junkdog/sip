@@ -7,6 +7,7 @@ use jiff::tz::TimeZone;
 
 use crate::aggregate::{GroupBy, Row};
 use crate::model::{Category, Rgb, Tokens, gruvbox, human};
+use crate::pricing::usd;
 
 const EIGHTHS: [char; 8] = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉'];
 const NUM_WIDTH: usize = 6;
@@ -52,8 +53,18 @@ pub fn render(rows: &[Row], categories: &[Category], by: GroupBy, style: &Style)
     let project_w = rows.iter().map(|r| r.project.chars().count()).max().unwrap_or(0).min(20);
     let model_w = rows.iter().map(|r| r.model_label().chars().count()).max().unwrap_or(0).max(5);
     let ctx_w = 9; // "1.0M/1.0M"
+    let total_cost: f64 = rows.iter().map(|r| r.cost).sum();
+    let cost_w = rows
+        .iter()
+        .map(|r| r.cost)
+        .chain([total_cost])
+        .map(|c| usd(c).len())
+        .max()
+        .unwrap_or(0)
+        .max(4)
+        + 1; // trailing '?' marks unpriced calls
 
-    let mut fixed = label_w + 2 + model_w + 2 + ctx_w + 2;
+    let mut fixed = label_w + 2 + model_w + 2 + ctx_w + 2 + cost_w + 2;
     if project_w > 0 {
         fixed += project_w + 2;
     }
@@ -78,7 +89,7 @@ pub fn render(rows: &[Row], categories: &[Category], by: GroupBy, style: &Style)
         let _ = write!(header, "{:project_w$}  ", "");
     }
     let ctx_header = if rows.iter().any(|r| r.window.is_some()) { "context" } else { "peak ctx" };
-    let _ = write!(header, "{:model_w$}  {:>ctx_w$}  ", "model", ctx_header);
+    let _ = write!(header, "{:model_w$}  {:>ctx_w$}  {:>cost_w$}  ", "model", ctx_header, "cost ");
     let head = header.clone();
     out.push_str(&style.paint(gruvbox::GRAY, &head));
     for &c in categories {
@@ -104,6 +115,8 @@ pub fn render(rows: &[Row], categories: &[Category], by: GroupBy, style: &Style)
         out.push_str(&style.paint(gruvbox::FG4, &format!("{:model_w$}  ", row.model_label())));
         out.push_str(&context_cell(row, ctx_w, style));
         out.push_str("  ");
+        out.push_str(&cost_cell(row.cost, row.unpriced > 0, cost_w, style));
+        out.push_str("  ");
 
         for (&c, &m) in categories.iter().zip(&max) {
             let v = row.tokens.get(c);
@@ -120,8 +133,11 @@ pub fn render(rows: &[Row], categories: &[Category], by: GroupBy, style: &Style)
     rows.iter().for_each(|r| total += r.tokens);
     let turns: usize = rows.iter().map(|r| r.turns).sum();
     let summary = format!("{} rows, {} calls", rows.len(), turns);
-    let pad = fixed.saturating_sub(2);
+    let pad = fixed.saturating_sub(cost_w + 4);
     out.push_str(&style.paint(gruvbox::GRAY, &format!("{summary:>pad$}  ")));
+    let unpriced = rows.iter().any(|r| r.unpriced > 0);
+    out.push_str(&cost_cell(total_cost, unpriced, cost_w, style));
+    out.push_str("  ");
     for &c in categories {
         let cell = format!("{:>w$}", human(total.get(c)), w = bar_w + 1 + NUM_WIDTH);
         out.push_str(&style.paint(c.color(), &cell));
@@ -173,6 +189,13 @@ fn context_cell(row: &Row, width: usize, style: &Style) -> String {
         style.paint(utilization_color(ratio), &peak),
         style.paint(gruvbox::GRAY, &format!("/{window}"))
     )
+}
+
+/// `$12.34 ` or `$12.34?` when some calls couldn't be priced (so the figure is a lower bound).
+fn cost_cell(cost: f64, partial: bool, width: usize, style: &Style) -> String {
+    let w = width - 1;
+    let mark = if partial { style.paint(gruvbox::RED, "?") } else { " ".to_string() };
+    format!("{}{mark}", style.paint(gruvbox::GREEN, &format!("{:>w$}", usd(cost))))
 }
 
 fn utilization_color(ratio: f64) -> Rgb {

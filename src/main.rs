@@ -2,6 +2,7 @@ mod aggregate;
 mod ansi;
 mod gnuplot;
 mod model;
+mod pricing;
 mod source;
 
 use std::io::IsTerminal;
