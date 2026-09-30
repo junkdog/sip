@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use clap::ValueEnum;
 use jiff::civil::{self, Weekday};
-use jiff::{Timestamp, ToSpan};
 use jiff::tz::TimeZone;
+use jiff::{Timestamp, ToSpan};
 
 use crate::model::{Tokens, short_model};
 use crate::source::{Transcripts, Turn};
@@ -16,12 +16,14 @@ pub enum GroupBy {
     Day,
     Week,
     Session,
+    Project,
 }
 
 #[derive(Debug)]
 pub struct Row {
     pub label: String,
-    /// Project name (cwd basename); for days and weeks, empty unless a single project was active.
+    /// Project name (cwd basename); for days and weeks, empty unless a single project was active;
+    /// always empty for projects, whose label is the name.
     pub project: String,
     pub start: Timestamp,
     pub tokens: Tokens,
@@ -34,7 +36,7 @@ pub struct Row {
     pub models: Vec<(String, usize)>,
     /// Largest context seen on a single call (main thread preferred over subagents).
     pub peak_context: u64,
-    /// Context window of the peak call's session; `None` for days and weeks, which span sessions.
+    /// Context window of the peak call's session; `None` for days, weeks and projects, which span sessions.
     pub window: Option<u64>,
 }
 
@@ -63,12 +65,14 @@ struct Acc {
 
 pub fn aggregate(data: &Transcripts, turns: &[&Turn], by: GroupBy, split_subagents: bool) -> Vec<Row> {
     let tz = TimeZone::system();
+    let launch_dirs = if by == GroupBy::Project { launch_dirs(data) } else { HashMap::new() };
     let mut groups: HashMap<String, Acc> = HashMap::new();
 
     for turn in turns {
         let key = match by {
             GroupBy::Day => turn.ts.to_zoned(tz.clone()).date().to_string(),
             GroupBy::Week => week_start(turn.ts.to_zoned(tz.clone()).date()).to_string(),
+            GroupBy::Project => project_name(launch_dirs.get(turn.session.as_str()).copied().unwrap_or(&turn.cwd)),
             GroupBy::Session => match (&turn.agent, split_subagents) {
                 (Some(agent), true) => format!("{}/{agent}", turn.session),
                 _ => turn.session.clone(),
@@ -107,6 +111,7 @@ pub fn aggregate(data: &Transcripts, turns: &[&Turn], by: GroupBy, split_subagen
                     let monday: civil::Date = key.parse().expect("week key is a date");
                     format!("W{:02} {key}", monday.iso_week_date().week())
                 }
+                GroupBy::Project => key,
                 GroupBy::Session => {
                     let time = start.to_zoned(tz.clone()).strftime("%m-%d %H:%M").to_string();
                     // split-out subagent rows are keyed "<session>/<agent>"
@@ -131,7 +136,11 @@ pub fn aggregate(data: &Transcripts, turns: &[&Turn], by: GroupBy, split_subagen
         })
         .collect();
 
-    rows.sort_by_key(|r| r.start);
+    match by {
+        // most expensive last, so `--limit` keeps the top spenders
+        GroupBy::Project => rows.sort_by(|a, b| a.cost.total_cmp(&b.cost)),
+        _ => rows.sort_by_key(|r| r.start),
+    }
     rows
 }
 
@@ -143,6 +152,19 @@ fn window_for(data: &Transcripts, turn: &Turn, ctx: u64) -> u64 {
         .get(&turn.session)
         .is_some_and(|models| models.contains(&turn.model));
     if flagged || ctx > DEFAULT_WINDOW { EXTENDED_WINDOW } else { DEFAULT_WINDOW }
+}
+
+/// Session -> cwd of its earliest call, so turns made after a `cd` into a
+/// subdirectory still count towards the project the session was started in.
+fn launch_dirs(data: &Transcripts) -> HashMap<&str, &str> {
+    let mut first: HashMap<&str, (Timestamp, &str)> = HashMap::new();
+    for turn in &data.turns {
+        let e = first.entry(&turn.session).or_insert((turn.ts, &turn.cwd));
+        if turn.ts < e.0 {
+            *e = (turn.ts, &turn.cwd);
+        }
+    }
+    first.into_iter().map(|(s, (_, cwd))| (s, cwd)).collect()
 }
 
 fn project_name(cwd: &str) -> String {
@@ -157,7 +179,8 @@ fn week_start(date: civil::Date) -> civil::Date {
 
 /// Sessions may `cd` around, so they take their most used project.
 fn project_label(projects: HashMap<String, usize>, by: GroupBy) -> String {
-    if by != GroupBy::Session && projects.len() > 1 {
+    // project rows already carry the name as their label
+    if by == GroupBy::Project || (by != GroupBy::Session && projects.len() > 1) {
         return String::new();
     }
     projects

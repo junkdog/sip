@@ -21,7 +21,7 @@ use model::Category;
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
-    /// Group usage per day, week or session
+    /// Group usage per day, week, session or project
     #[arg(short, long, value_enum, default_value_t = GroupBy::Day)]
     by: GroupBy,
 
@@ -130,6 +130,7 @@ fn main() -> Result<()> {
                 GroupBy::Day => "Claude Code token usage per day",
                 GroupBy::Week => "Claude Code token usage per week",
                 GroupBy::Session => "Claude Code token usage per session",
+                GroupBy::Project => "Claude Code token usage per project",
             };
             // only the throwaway inline image goes transparent; files written with -o keep the background
             let inline = gnuplot::can_display_inline();
