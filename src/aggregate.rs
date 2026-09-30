@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use clap::ValueEnum;
-use jiff::Timestamp;
+use jiff::civil::{self, Weekday};
+use jiff::{Timestamp, ToSpan};
 use jiff::tz::TimeZone;
 
 use crate::model::{Tokens, short_model};
@@ -13,13 +14,14 @@ const EXTENDED_WINDOW: u64 = 1_000_000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum GroupBy {
     Day,
+    Week,
     Session,
 }
 
 #[derive(Debug)]
 pub struct Row {
     pub label: String,
-    /// Project name (cwd basename); for days, empty unless a single project was active.
+    /// Project name (cwd basename); for days and weeks, empty unless a single project was active.
     pub project: String,
     pub start: Timestamp,
     pub tokens: Tokens,
@@ -32,7 +34,7 @@ pub struct Row {
     pub models: Vec<(String, usize)>,
     /// Largest context seen on a single call (main thread preferred over subagents).
     pub peak_context: u64,
-    /// Context window of the peak call's session; `None` for days, which span sessions.
+    /// Context window of the peak call's session; `None` for days and weeks, which span sessions.
     pub window: Option<u64>,
 }
 
@@ -66,6 +68,7 @@ pub fn aggregate(data: &Transcripts, turns: &[&Turn], by: GroupBy, split_subagen
     for turn in turns {
         let key = match by {
             GroupBy::Day => turn.ts.to_zoned(tz.clone()).date().to_string(),
+            GroupBy::Week => week_start(turn.ts.to_zoned(tz.clone()).date()).to_string(),
             GroupBy::Session => match (&turn.agent, split_subagents) {
                 (Some(agent), true) => format!("{}/{agent}", turn.session),
                 _ => turn.session.clone(),
@@ -99,6 +102,11 @@ pub fn aggregate(data: &Transcripts, turns: &[&Turn], by: GroupBy, split_subagen
             let start = acc.start.expect("group has at least one turn");
             let label = match by {
                 GroupBy::Day => key,
+                // keyed by the week's monday: `W40 2026-09-28`
+                GroupBy::Week => {
+                    let monday: civil::Date = key.parse().expect("week key is a date");
+                    format!("W{:02} {key}", monday.iso_week_date().week())
+                }
                 GroupBy::Session => {
                     let time = start.to_zoned(tz.clone()).strftime("%m-%d %H:%M").to_string();
                     // split-out subagent rows are keyed "<session>/<agent>"
@@ -141,9 +149,15 @@ fn project_name(cwd: &str) -> String {
     cwd.rsplit('/').find(|s| !s.is_empty()).unwrap_or(cwd).to_string()
 }
 
+/// Monday of the ISO week containing `date`.
+fn week_start(date: civil::Date) -> civil::Date {
+    let offset = date.weekday().since(Weekday::Monday);
+    date.checked_sub(i64::from(offset).days()).expect("date in range")
+}
+
 /// Sessions may `cd` around, so they take their most used project.
 fn project_label(projects: HashMap<String, usize>, by: GroupBy) -> String {
-    if by == GroupBy::Day && projects.len() > 1 {
+    if by != GroupBy::Session && projects.len() > 1 {
         return String::new();
     }
     projects

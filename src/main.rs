@@ -21,7 +21,7 @@ use model::Category;
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
-    /// Group usage per day or per session
+    /// Group usage per day, week or session
     #[arg(short, long, value_enum, default_value_t = GroupBy::Day)]
     by: GroupBy,
 
@@ -128,6 +128,7 @@ fn main() -> Result<()> {
             let output = cli.output.clone().unwrap_or_else(gnuplot::default_output);
             let title = match cli.by {
                 GroupBy::Day => "Claude Code token usage per day",
+                GroupBy::Week => "Claude Code token usage per week",
                 GroupBy::Session => "Claude Code token usage per session",
             };
             // only the throwaway inline image goes transparent; files written with -o keep the background
