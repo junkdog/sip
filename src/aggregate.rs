@@ -172,7 +172,7 @@ fn project_name(cwd: &str) -> String {
 }
 
 /// Monday of the ISO week containing `date`.
-fn week_start(date: civil::Date) -> civil::Date {
+pub fn week_start(date: civil::Date) -> civil::Date {
     let offset = date.weekday().since(Weekday::Monday);
     date.checked_sub(i64::from(offset).days()).expect("date in range")
 }

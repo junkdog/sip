@@ -29,11 +29,13 @@ struct Cli {
     #[arg(short, long, value_enum, value_delimiter = ',')]
     category: Vec<Category>,
 
-    /// Only include usage since DATE (YYYY-MM-DD) or a relative span (12h, 7d, 2w)
+    /// Only include usage since DATE (YYYY-MM-DD), today, week (from monday), month (from the 1st)
+    /// or a relative span (12h, 7d, 2w)
     #[arg(long)]
     since: Option<String>,
 
-    /// Only include usage until DATE (YYYY-MM-DD, inclusive) or a relative span ago
+    /// Only include usage until DATE (YYYY-MM-DD, inclusive), the end of today/week/month,
+    /// or a relative span ago
     #[arg(long)]
     until: Option<String>,
 
@@ -146,11 +148,29 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// `2026-09-01` (local midnight; `end` selects the following midnight) or `12h`/`7d`/`2w` ago.
+/// `2026-09-01`, `today`, `week` or `month` (local midnight starting the period; `end` selects
+/// the midnight ending it) or `12h`/`7d`/`2w` ago.
 fn parse_time(s: &str, end: bool) -> Result<Timestamp> {
     let tz = TimeZone::system();
-    if let Ok(date) = s.parse::<civil::Date>() {
-        let date = if end { date.tomorrow()? } else { date };
+    let now = Timestamp::now().to_zoned(tz.clone());
+    let today = now.date();
+    let period = match s {
+        "today" => Some((today, today.tomorrow()?)),
+        "week" => {
+            let monday = aggregate::week_start(today);
+            Some((monday, monday.checked_add(1.week())?))
+        }
+        "month" => {
+            let first = today.first_of_month();
+            Some((first, first.checked_add(1.month())?))
+        }
+        _ => match s.parse::<civil::Date>() {
+            Ok(date) => Some((date, date.tomorrow()?)),
+            Err(_) => None,
+        },
+    };
+    if let Some((start, next)) = period {
+        let date = if end { next } else { start };
         return Ok(date.to_zoned(tz)?.timestamp());
     }
 
@@ -162,6 +182,5 @@ fn parse_time(s: &str, end: bool) -> Result<Timestamp> {
         "w" => n * 24 * 7,
         _ => bail!("invalid time unit in {s}; expected h, d or w"),
     };
-    let now = Timestamp::now().to_zoned(tz);
     Ok(now.checked_sub(hours.hours())?.timestamp())
 }
