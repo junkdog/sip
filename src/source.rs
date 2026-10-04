@@ -68,6 +68,14 @@ struct Usage {
     #[serde(default)]
     cache_read_input_tokens: u64,
     cache_creation: Option<CacheCreation>,
+    output_tokens_details: Option<OutputDetails>,
+}
+
+/// Absent on the partial usage of early streamed blocks and on most subagent calls.
+#[derive(Deserialize)]
+struct OutputDetails {
+    #[serde(default)]
+    thinking_tokens: u64,
 }
 
 #[derive(Deserialize)]
@@ -202,6 +210,7 @@ fn to_turn(entry: &Entry) -> Option<Turn> {
             usage.output_tokens,
             usage.cache_creation_input_tokens,
             usage.cache_read_input_tokens,
+            usage.output_tokens_details.as_ref().map_or(0, |d| d.thinking_tokens),
         ),
         cost,
     })

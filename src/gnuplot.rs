@@ -13,6 +13,8 @@ use crate::model::{Category, gruvbox};
 const PANEL_HEIGHT: usize = 260;
 /// Vertical pixels between panels, so adjacent y tick labels don't collide.
 const PANEL_GAP: f64 = 28.0;
+/// Data column holding the thinking tokens, after idx, label and the four categories.
+const THINKING_COLUMN: usize = 7;
 
 /// `transparent` drops the background fill, for images drawn over the terminal's own background.
 pub fn render(rows: &[Row], categories: &[Category], output: &Path, title: &str, transparent: bool) -> Result<()> {
@@ -58,13 +60,18 @@ pub fn default_output() -> PathBuf {
 }
 
 fn data(rows: &[Row]) -> String {
-    let mut out = String::from("# idx label input output cache_write cache_read\n");
+    let mut out = String::from("# idx label input output cache_write cache_read thinking\n");
     for (i, row) in rows.iter().enumerate() {
         let label = match row.project.as_str() {
             "" => row.label.clone(),
             p => format!("{} {p}", row.label),
         };
-        let values: Vec<String> = Category::ALL.iter().map(|&c| row.tokens.get(c).to_string()).collect();
+        let values: Vec<String> = Category::ALL
+            .iter()
+            .map(|&c| row.tokens.get(c))
+            .chain([row.tokens.thinking()])
+            .map(|v| v.to_string())
+            .collect();
         out.push_str(&format!("{i} \"{}\" {}\n", label.replace('"', "'"), values.join(" ")));
     }
     out
@@ -135,11 +142,19 @@ set multiplot title "{{/:Bold {title}}}" font ',15' textcolor rgb '{yellow}'
             ""
         };
         s.push_str(&format!(
-            "plot '{}' using 1:{}{xtic} with boxes lc rgb '{}'\n",
+            "plot '{}' using 1:{}{xtic} with boxes lc rgb '{}'",
             data.display(),
             c as usize + 3,
             c.color().hex()
         ));
+        if c == Category::Output {
+            // thinking is part of the output: draw its share over the base of each bar
+            s.push_str(&format!(
+                ", '' using 1:{THINKING_COLUMN} with boxes lc rgb '{}'",
+                Category::thinking_color().hex()
+            ));
+        }
+        s.push('\n');
     }
     s.push_str("unset multiplot\n");
     s

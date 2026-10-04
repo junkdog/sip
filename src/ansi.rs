@@ -92,9 +92,17 @@ pub fn render(rows: &[Row], categories: &[Category], by: GroupBy, style: &Style)
     let _ = write!(header, "{:model_w$}  {:>ctx_w$}  {:>cost_w$}  ", "model", ctx_header, "cost ");
     let head = header.clone();
     out.push_str(&style.paint(gruvbox::GRAY, &head));
+    let cell_w = bar_w + 1 + NUM_WIDTH;
     for &c in categories {
-        let cell = format!("{:<w$}", c.label(), w = bar_w + 1 + NUM_WIDTH);
-        out.push_str(&style.paint(c.color(), &cell));
+        let label = c.label();
+        // the output bar leads with its thinking share; name the dimmer shade when there's room
+        let legend = " thinking";
+        if c == Category::Output && label.len() + legend.len() <= cell_w {
+            out.push_str(&style.paint(c.color(), label));
+            out.push_str(&style.paint(Category::thinking_color(), &format!("{legend:<w$}", w = cell_w - label.len())));
+        } else {
+            out.push_str(&style.paint(c.color(), &format!("{label:<cell_w$}")));
+        }
         out.push_str("  ");
     }
     out.push('\n');
@@ -120,7 +128,8 @@ pub fn render(rows: &[Row], categories: &[Category], by: GroupBy, style: &Style)
 
         for (&c, &m) in categories.iter().zip(&max) {
             let v = row.tokens.get(c);
-            out.push_str(&bar(v, m, bar_w, c.color(), style));
+            let thinking = if c == Category::Output { row.tokens.thinking() } else { 0 };
+            out.push_str(&bar(v, thinking, m, bar_w, c.color(), style));
             out.push(' ');
             out.push_str(&style.paint(gruvbox::FG, &format!("{:>NUM_WIDTH$}", human(v))));
             out.push_str("  ");
@@ -139,31 +148,57 @@ pub fn render(rows: &[Row], categories: &[Category], by: GroupBy, style: &Style)
     out.push_str(&cost_cell(total_cost, unpriced, cost_w, style));
     out.push_str("  ");
     for &c in categories {
-        let cell = format!("{:>w$}", human(total.get(c)), w = bar_w + 1 + NUM_WIDTH);
-        out.push_str(&style.paint(c.color(), &cell));
+        let sum = human(total.get(c));
+        let thinking = human(total.thinking());
+        if c == Category::Output && total.thinking() > 0 && thinking.len() + 1 + sum.len() <= cell_w {
+            let w = cell_w - sum.len() - 1;
+            out.push_str(&style.paint(Category::thinking_color(), &format!("{thinking:>w$} ")));
+            out.push_str(&style.paint(c.color(), &sum));
+        } else {
+            out.push_str(&style.paint(c.color(), &format!("{sum:>cell_w$}")));
+        }
         out.push_str("  ");
     }
     out.push('\n');
     out
 }
 
-fn bar(value: u64, max: u64, width: usize, color: Rgb, style: &Style) -> String {
-    let eighths = if max == 0 {
-        0
-    } else {
-        let e = (value as f64 / max as f64 * (width * 8) as f64).round() as usize;
-        if value > 0 { e.max(1) } else { 0 }
+/// `value` scaled against `max`, with its leading `thinking` share drawn in the thinking shade.
+fn bar(value: u64, thinking: u64, max: u64, width: usize, color: Rgb, style: &Style) -> String {
+    let scale = |v: u64| {
+        if max == 0 || v == 0 {
+            0
+        } else {
+            ((v as f64 / max as f64 * (width * 8) as f64).round() as usize).max(1)
+        }
     };
-    let full = eighths / 8;
-    let part = eighths % 8;
+    let total = scale(value);
+    // keep at least an eighth of the non-thinking output visible
+    let thinking = if thinking < value { scale(thinking).min(total.saturating_sub(1)) } else { total };
+    let shade = Category::thinking_color();
+    // without color, thinking is told apart by texture
+    let (solid, textured) = if style.color { ('█', '█') } else { ('█', '▓') };
 
     let mut s = String::new();
-    s.push_str(&style.bg(gruvbox::BG1));
-    s.push_str(&style.fg(color));
-    s.extend(std::iter::repeat_n('█', full));
-    if full < width {
-        s.push(EIGHTHS[part]);
-        s.extend(std::iter::repeat_n(' ', width - full - 1));
+    let mut current = None;
+    for cell in 0..width {
+        let fill = |eighths: usize| eighths.saturating_sub(cell * 8).min(8);
+        let (ch, fg, bg) = match (fill(thinking), fill(total)) {
+            (8, _) => (textured, shade, gruvbox::BG1),
+            (0, 8) => (solid, color, gruvbox::BG1),
+            (0, t) => (EIGHTHS[t], color, gruvbox::BG1),
+            // thinking ends mid-cell, with the rest of the output filling the cell behind it
+            (k, 8) if !style.color => (if k >= 4 { textured } else { solid }, shade, color),
+            (k, 8) => (EIGHTHS[k], shade, color),
+            // both segments end in this cell: the larger share takes it
+            (k, t) => (EIGHTHS[t], if 2 * k >= t { shade } else { color }, gruvbox::BG1),
+        };
+        if current != Some((fg, bg)) {
+            current = Some((fg, bg));
+            s.push_str(&style.bg(bg));
+            s.push_str(&style.fg(fg));
+        }
+        s.push(ch);
     }
     s.push_str(style.reset());
     if !style.color {

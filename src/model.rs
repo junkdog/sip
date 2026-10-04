@@ -2,15 +2,23 @@ use clap::ValueEnum;
 
 /// Token counters for a single API call, or an aggregate of many.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct Tokens([u64; 4]);
+pub struct Tokens {
+    counts: [u64; 4],
+    /// Share of the output spent on extended thinking; included in the output count.
+    thinking: u64,
+}
 
 impl Tokens {
-    pub fn new(input: u64, output: u64, cache_write: u64, cache_read: u64) -> Self {
-        Self([input, output, cache_write, cache_read])
+    pub fn new(input: u64, output: u64, cache_write: u64, cache_read: u64, thinking: u64) -> Self {
+        Self { counts: [input, output, cache_write, cache_read], thinking: thinking.min(output) }
     }
 
     pub fn get(&self, category: Category) -> u64 {
-        self.0[category as usize]
+        self.counts[category as usize]
+    }
+
+    pub fn thinking(&self) -> u64 {
+        self.thinking
     }
 
     /// Tokens occupying the context window for this call: everything sent as input.
@@ -21,7 +29,8 @@ impl Tokens {
 
 impl std::ops::AddAssign for Tokens {
     fn add_assign(&mut self, rhs: Self) {
-        self.0.iter_mut().zip(rhs.0).for_each(|(a, b)| *a += b);
+        self.counts.iter_mut().zip(rhs.counts).for_each(|(a, b)| *a += b);
+        self.thinking += rhs.thinking;
     }
 }
 
@@ -62,9 +71,14 @@ impl Category {
             Category::CacheRead => gruvbox::AQUA,
         }
     }
+
+    /// Non-bright shade for the thinking share of the output.
+    pub fn thinking_color() -> Rgb {
+        gruvbox::NEUTRAL_ORANGE
+    }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rgb(pub u8, pub u8, pub u8);
 
 impl Rgb {
@@ -94,6 +108,7 @@ pub mod gruvbox {
     pub const PURPLE: Rgb = Rgb(0xd3, 0x86, 0x9b);
     pub const AQUA: Rgb = Rgb(0x8e, 0xc0, 0x7c);
     pub const ORANGE: Rgb = Rgb(0xfe, 0x80, 0x19);
+    pub const NEUTRAL_ORANGE: Rgb = Rgb(0xd6, 0x5d, 0x0e);
 }
 
 /// `1234567` -> `1.2M`
