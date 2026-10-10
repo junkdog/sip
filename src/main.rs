@@ -29,13 +29,13 @@ struct Cli {
     #[arg(short, long, value_enum, value_delimiter = ',')]
     category: Vec<Category>,
 
-    /// Only include usage since DATE (YYYY-MM-DD), today, week (from monday), month (from the 1st)
-    /// or a relative span (12h, 7d, 2w)
+    /// Only include usage since DATE (YYYY-MM-DD), today, week (from monday), month (from the 1st),
+    /// the most recent day of week (mon..sun) or a relative span (12h, 7d, 2w)
     #[arg(long)]
     since: Option<String>,
 
-    /// Only include usage until DATE (YYYY-MM-DD, inclusive), the end of today/week/month,
-    /// or a relative span ago
+    /// Only include usage until DATE (YYYY-MM-DD, inclusive), the end of today/week/month or
+    /// the most recent day of week (mon..sun), or a relative span ago
     #[arg(long)]
     until: Option<String>,
 
@@ -148,8 +148,9 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// `2026-09-01`, `today`, `week` or `month` (local midnight starting the period; `end` selects
-/// the midnight ending it) or `12h`/`7d`/`2w` ago.
+/// `2026-09-01`, `today`, `week`, `month` or `mon`..`sun` (the most recent such day, today
+/// included) as local midnight starting the period (`end` selects the midnight ending it), or
+/// `12h`/`7d`/`2w` ago.
 fn parse_time(s: &str, end: bool) -> Result<Timestamp> {
     let tz = TimeZone::system();
     let now = Timestamp::now().to_zoned(tz.clone());
@@ -164,9 +165,14 @@ fn parse_time(s: &str, end: bool) -> Result<Timestamp> {
             let first = today.first_of_month();
             Some((first, first.checked_add(1.month())?))
         }
-        _ => match s.parse::<civil::Date>() {
-            Ok(date) => Some((date, date.tomorrow()?)),
-            Err(_) => None,
+        _ => match (weekday(s), s.parse::<civil::Date>()) {
+            (Some(weekday), _) => {
+                let offset = today.weekday().since(weekday);
+                let date = today.checked_sub(i64::from(offset).days())?;
+                Some((date, date.tomorrow()?))
+            }
+            (None, Ok(date)) => Some((date, date.tomorrow()?)),
+            (None, Err(_)) => None,
         },
     };
     if let Some((start, next)) = period {
@@ -183,4 +189,18 @@ fn parse_time(s: &str, end: bool) -> Result<Timestamp> {
         _ => bail!("invalid time unit in {s}; expected h, d or w"),
     };
     Ok(now.checked_sub(hours.hours())?.timestamp())
+}
+
+fn weekday(s: &str) -> Option<civil::Weekday> {
+    use civil::Weekday::*;
+    Some(match s {
+        "mon" => Monday,
+        "tue" => Tuesday,
+        "wed" => Wednesday,
+        "thu" => Thursday,
+        "fri" => Friday,
+        "sat" => Saturday,
+        "sun" => Sunday,
+        _ => return None,
+    })
 }

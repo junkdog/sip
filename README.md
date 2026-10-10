@@ -40,8 +40,8 @@ sip --model opus --category out,cr --project sip
 sip --by week --render gnuplot --output usage.png
 ```
 
-`--since` and `--until` accept a date (`2026-09-01`), `today`, `week`, `month` or a relative
-span (`12h`, `7d`, `2w`).
+`--since` and `--until` accept a date (`2026-09-01`), `today`, `week`, `month`, a day of the
+week (`mon`..`sun`, the most recent one) or a relative span (`12h`, `7d`, `2w`).
 
 Transcripts are read from `$CLAUDE_CONFIG_DIR/projects` or `~/.claude/projects`; override with
 `--dir`. See `sip --help` for all options.
