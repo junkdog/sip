@@ -116,9 +116,16 @@ pub fn render(rows: &[Row], categories: &[Category], by: GroupBy, style: &Style)
             }
         }
 
-        out.push_str(&style.paint(gruvbox::FG, &format!("{:label_w$}  ", row.label)));
+        if by == GroupBy::Project {
+            out.push_str(&project_cell(&row.label, label_w, (gruvbox::GRAY, gruvbox::FG), style));
+        } else {
+            out.push_str(&style.paint(gruvbox::FG, &format!("{:label_w$}", row.label)));
+        }
+        out.push_str("  ");
         if project_w > 0 {
-            out.push_str(&style.paint(gruvbox::PURPLE, &format!("{:project_w$}  ", truncate(&row.project, project_w))));
+            let name = truncate(&row.project, project_w);
+            out.push_str(&project_cell(&name, project_w, (gruvbox::NEUTRAL_PURPLE, gruvbox::PURPLE), style));
+            out.push_str("  ");
         }
         out.push_str(&style.paint(gruvbox::FG4, &format!("{:model_w$}  ", row.model_label())));
         out.push_str(&context_cell(row, ctx_w, style));
@@ -224,6 +231,15 @@ fn context_cell(row: &Row, width: usize, style: &Style) -> String {
         style.paint(utilization_color(ratio), &peak),
         style.paint(gruvbox::GRAY, &format!("/{window}"))
     )
+}
+
+/// `rust/sift` with the disambiguating parent directories dimmer than the project directory.
+fn project_cell(name: &str, width: usize, (parent, dir): (Rgb, Rgb), style: &Style) -> String {
+    let pad = " ".repeat(width.saturating_sub(name.chars().count()));
+    match name.rsplit_once('/') {
+        Some((path, base)) => format!("{}{}{pad}", style.paint(parent, &format!("{path}/")), style.paint(dir, base)),
+        None => format!("{}{pad}", style.paint(dir, name)),
+    }
 }
 
 /// `$12.34 ` or `$12.34?` when some calls couldn't be priced (so the figure is a lower bound).

@@ -109,6 +109,7 @@ pub mod gruvbox {
     pub const AQUA: Rgb = Rgb(0x8e, 0xc0, 0x7c);
     pub const ORANGE: Rgb = Rgb(0xfe, 0x80, 0x19);
     pub const NEUTRAL_ORANGE: Rgb = Rgb(0xd6, 0x5d, 0x0e);
+    pub const NEUTRAL_PURPLE: Rgb = Rgb(0xb1, 0x62, 0x86);
 }
 
 /// `1234567` -> `1.2M`
