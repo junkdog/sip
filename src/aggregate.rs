@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use clap::ValueEnum;
 use jiff::civil::{self, Weekday};
@@ -22,7 +22,7 @@ pub enum GroupBy {
 #[derive(Debug)]
 pub struct Row {
     pub label: String,
-    /// Project name (cwd basename); for days and weeks, empty unless a single project was active;
+    /// Project name (see [`project_names`]); for days and weeks, empty unless a single project was active;
     /// always empty for projects, whose label is the name.
     pub project: String,
     pub start: Timestamp,
@@ -66,18 +66,19 @@ struct Acc {
 pub fn aggregate(data: &Transcripts, turns: &[&Turn], by: GroupBy) -> Vec<Row> {
     let tz = TimeZone::system();
     let launch_dirs = if by == GroupBy::Project { launch_dirs(data) } else { HashMap::new() };
+    let names = project_names(data.turns.iter().map(|t| t.cwd.as_str()));
     let mut groups: HashMap<String, Acc> = HashMap::new();
 
     for turn in turns {
         let key = match by {
             GroupBy::Day => turn.ts.to_zoned(tz.clone()).date().to_string(),
             GroupBy::Week => week_start(turn.ts.to_zoned(tz.clone()).date()).to_string(),
-            GroupBy::Project => project_name(launch_dirs.get(turn.session.as_str()).copied().unwrap_or(&turn.cwd)),
+            GroupBy::Project => names[launch_dirs.get(turn.session.as_str()).copied().unwrap_or(&turn.cwd)].clone(),
             GroupBy::Session => turn.session.clone(),
         };
 
         let acc = groups.entry(key).or_default();
-        *acc.projects.entry(project_name(&turn.cwd)).or_default() += 1;
+        *acc.projects.entry(names[turn.cwd.as_str()].clone()).or_default() += 1;
         acc.start = Some(acc.start.map_or(turn.ts, |s| s.min(turn.ts)));
         acc.tokens += turn.tokens;
         acc.turns += 1;
@@ -160,8 +161,28 @@ fn launch_dirs(data: &Transcripts) -> HashMap<&str, &str> {
     first.into_iter().map(|(s, (_, cwd))| (s, cwd)).collect()
 }
 
-fn project_name(cwd: &str) -> String {
-    cwd.rsplit('/').find(|s| !s.is_empty()).unwrap_or(cwd).to_string()
+/// Cwd -> project name: its basename, prefixed with as many parent directories as it takes
+/// to tell it apart from every other cwd, e.g. `jvm/sift` and `rust/sift`.
+fn project_names<'a>(cwds: impl Iterator<Item = &'a str>) -> HashMap<&'a str, String> {
+    let cwds: Vec<(&str, Vec<&str>)> = cwds
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .map(|cwd| (cwd, cwd.rsplit('/').filter(|s| !s.is_empty()).collect()))
+        .collect();
+
+    cwds.iter()
+        .map(|(cwd, parts)| {
+            let shared = cwds
+                .iter()
+                .filter(|(_, other)| other != parts)
+                .map(|(_, other)| parts.iter().zip(other).take_while(|(a, b)| a == b).count())
+                .max()
+                .unwrap_or(0);
+            let mut name = parts[..(shared + 1).min(parts.len())].to_vec();
+            name.reverse();
+            (*cwd, name.join("/"))
+        })
+        .collect()
 }
 
 /// Monday of the ISO week containing `date`.
@@ -181,4 +202,21 @@ fn project_label(projects: HashMap<String, usize>, by: GroupBy) -> String {
         .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)))
         .map(|(p, _)| p)
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn project_names_disambiguate_shared_basenames() {
+        let cwds = ["/home/u/jvm/sift", "/home/u/rust/sift", "/home/u/rust/sip", "/home/u/rust/sip/", "/x/u/rust/sip", ""];
+        let names = project_names(cwds.into_iter());
+        assert_eq!(names["/home/u/jvm/sift"], "jvm/sift");
+        assert_eq!(names["/home/u/rust/sift"], "rust/sift");
+        assert_eq!(names["/home/u/rust/sip"], "home/u/rust/sip");
+        assert_eq!(names["/home/u/rust/sip/"], "home/u/rust/sip");
+        assert_eq!(names["/x/u/rust/sip"], "x/u/rust/sip");
+        assert_eq!(names[""], "");
+    }
 }
