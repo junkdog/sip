@@ -30,8 +30,8 @@ The gnuplot renderer requires `gnuplot` on your `PATH`.
 # daily usage, 30 most recent rows (default)
 sip
 
-# per session this week, subagents as separate rows
-sip --by session --since week --split-subagents
+# per session this week
+sip --by session --since week
 
 # opus only, output and cache reads, for a single project
 sip --model opus --category out,cr --project sip

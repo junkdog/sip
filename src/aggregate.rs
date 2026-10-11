@@ -63,7 +63,7 @@ struct Acc {
     peak_any: (u64, u64),
 }
 
-pub fn aggregate(data: &Transcripts, turns: &[&Turn], by: GroupBy, split_subagents: bool) -> Vec<Row> {
+pub fn aggregate(data: &Transcripts, turns: &[&Turn], by: GroupBy) -> Vec<Row> {
     let tz = TimeZone::system();
     let launch_dirs = if by == GroupBy::Project { launch_dirs(data) } else { HashMap::new() };
     let mut groups: HashMap<String, Acc> = HashMap::new();
@@ -73,10 +73,7 @@ pub fn aggregate(data: &Transcripts, turns: &[&Turn], by: GroupBy, split_subagen
             GroupBy::Day => turn.ts.to_zoned(tz.clone()).date().to_string(),
             GroupBy::Week => week_start(turn.ts.to_zoned(tz.clone()).date()).to_string(),
             GroupBy::Project => project_name(launch_dirs.get(turn.session.as_str()).copied().unwrap_or(&turn.cwd)),
-            GroupBy::Session => match (&turn.agent, split_subagents) {
-                (Some(agent), true) => format!("{}/{agent}", turn.session),
-                _ => turn.session.clone(),
-            },
+            GroupBy::Session => turn.session.clone(),
         };
 
         let acc = groups.entry(key).or_default();
@@ -112,11 +109,7 @@ pub fn aggregate(data: &Transcripts, turns: &[&Turn], by: GroupBy, split_subagen
                     format!("W{:02} {key}", monday.iso_week_date().week())
                 }
                 GroupBy::Project => key,
-                GroupBy::Session => {
-                    let time = start.to_zoned(tz.clone()).strftime("%m-%d %H:%M").to_string();
-                    // split-out subagent rows are keyed "<session>/<agent>"
-                    if key.contains('/') { format!("{time} ↳") } else { format!("{time}  ") }
-                }
+                GroupBy::Session => start.to_zoned(tz.clone()).strftime("%m-%d %H:%M").to_string(),
             };
             let mut models: Vec<_> = acc.models.into_iter().collect();
             models.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));

@@ -47,10 +47,6 @@ struct Cli {
     #[arg(short, long)]
     model: Option<String>,
 
-    /// Show subagents as separate rows (with --by session)
-    #[arg(long)]
-    split_subagents: bool,
-
     /// Show only the N most recent rows; 0 shows everything
     #[arg(short = 'n', long, default_value_t = 30)]
     limit: usize,
@@ -104,7 +100,7 @@ fn main() -> Result<()> {
         .filter(|t| cli.model.as_ref().is_none_or(|m| t.model.contains(m.as_str())))
         .collect();
 
-    let mut rows = aggregate::aggregate(&data, &turns, cli.by, cli.split_subagents);
+    let mut rows = aggregate::aggregate(&data, &turns, cli.by);
     if cli.limit > 0 && rows.len() > cli.limit {
         rows.drain(..rows.len() - cli.limit);
     }
