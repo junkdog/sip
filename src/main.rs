@@ -5,12 +5,14 @@ mod model;
 mod pricing;
 mod source;
 
+use std::collections::BTreeSet;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use clap::{CommandFactory, Parser, ValueEnum};
-use clap_complete::Shell;
+use clap_complete::env::Shells;
+use clap_complete::{ArgValueCandidates, CompleteEnv, CompletionCandidate, Shell};
 use jiff::tz::TimeZone;
 use jiff::{Timestamp, ToSpan, civil};
 
@@ -44,7 +46,7 @@ struct Cli {
     project: Option<String>,
 
     /// Only include models containing this string (e.g. opus, sonnet-5)
-    #[arg(short, long)]
+    #[arg(short, long, add = ArgValueCandidates::new(model_candidates))]
     model: Option<String>,
 
     /// Show only the N most recent rows; 0 shows everything
@@ -67,7 +69,7 @@ struct Cli {
     #[arg(long)]
     no_color: bool,
 
-    /// Print a shell completion script and exit (e.g. `sip --completions zsh > ~/.zfunc/_sip`)
+    /// Print a shell completion script and exit (e.g. `source <(sip --completions zsh)`)
     #[arg(long, value_name = "SHELL", exclusive = true)]
     completions: Option<Shell>,
 }
@@ -79,9 +81,22 @@ enum Renderer {
 }
 
 fn main() -> Result<()> {
+    // the registered completion script calls back into sip with COMPLETE=<shell> set
+    CompleteEnv::with_factory(Cli::command).complete();
+
     let cli = Cli::parse();
     if let Some(shell) = cli.completions {
-        clap_complete::generate(shell, &mut Cli::command(), "sip", &mut std::io::stdout());
+        let completer = std::env::current_exe().context("locating the sip binary")?;
+        Shells::builtins()
+            .completer(&shell.to_string())
+            .context("unsupported shell")?
+            .write_registration(
+                "COMPLETE",
+                "sip",
+                "sip",
+                &completer.to_string_lossy(),
+                &mut std::io::stdout(),
+            )?;
         return Ok(());
     }
 
@@ -185,6 +200,16 @@ fn parse_time(s: &str, end: bool) -> Result<Timestamp> {
         _ => bail!("invalid time unit in {s}; expected h, d or w"),
     };
     Ok(now.checked_sub(hours.hours())?.timestamp())
+}
+
+/// `--model` completions: the distinct models in the default transcript directory (`--dir` is
+/// not visible to completers).
+fn model_candidates() -> Vec<CompletionCandidate> {
+    let Ok(data) = source::load(&source::default_dir()) else {
+        return Vec::new();
+    };
+    let models: BTreeSet<String> = data.turns.into_iter().map(|t| t.model).collect();
+    models.into_iter().map(CompletionCandidate::new).collect()
 }
 
 fn weekday(s: &str) -> Option<civil::Weekday> {
