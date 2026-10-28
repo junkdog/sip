@@ -50,6 +50,34 @@ week (`mon`..`sun`, the most recent one) or a relative span (`12h`, `7d`, `2w`).
 Transcripts are read from `$CLAUDE_CONFIG_DIR/projects` or `~/.claude/projects`; override with
 `--dir`. See `sip --help` for all options.
 
+### Keeping transcripts
+
+Claude Code deletes session transcripts that have been inactive for more than 30 days, so by
+default `sip` can only see about a month of history. Raise the limit with `cleanupPeriodDays`
+in `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR/settings.json`):
+
+```json
+{
+  "cleanupPeriodDays": 36500
+}
+```
+
+Don't set it to `0`: that does not mean "keep forever".
+
+To keep a copy independent of Claude Code's settings, mirror the transcripts into an archive
+and point `sip` at it. Leave out `--delete`, so that sessions Claude Code has cleaned up stay
+in the archive:
+
+```zsh
+# e.g. from a daily cron job or systemd timer
+rsync -a ~/.claude/projects/ ~/claude-archive/projects/
+
+sip --dir ~/claude-archive/projects
+```
+
+Point `--dir` at one copy of each transcript only: API calls are deduplicated within a
+transcript file, not across files, so a session present in two places is counted twice.
+
 ### Shell completions
 
 ```zsh
