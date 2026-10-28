@@ -27,23 +27,27 @@ pub struct Style {
 }
 
 impl Style {
-    fn fg(&self, c: Rgb) -> String {
+    pub fn fg(&self, c: Rgb) -> String {
         if self.color { format!("\x1b[38;2;{};{};{}m", c.0, c.1, c.2) } else { String::new() }
     }
 
-    fn bg(&self, c: Rgb) -> String {
+    pub fn bg(&self, c: Rgb) -> String {
         if self.color { format!("\x1b[48;2;{};{};{}m", c.0, c.1, c.2) } else { String::new() }
     }
 
-    fn bold(&self) -> &'static str {
+    pub fn bold(&self) -> &'static str {
         if self.color { "\x1b[1m" } else { "" }
     }
 
-    fn reset(&self) -> &'static str {
+    pub fn underline(&self) -> &'static str {
+        if self.color { "\x1b[4m" } else { "" }
+    }
+
+    pub fn reset(&self) -> &'static str {
         if self.color { "\x1b[0m" } else { "" }
     }
 
-    fn paint(&self, c: Rgb, s: &str) -> String {
+    pub fn paint(&self, c: Rgb, s: &str) -> String {
         format!("{}{s}{}", self.fg(c), self.reset())
     }
 }

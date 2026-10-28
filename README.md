@@ -13,6 +13,7 @@ renders token usage as ANSI bar charts in the terminal, or as a PNG via gnuplot.
 - input, output, cache write and cache read tokens; output bars split out extended thinking
 - peak context window utilization per row
 - estimated cost based on Anthropic API list prices
+- calendar view of the months in range, each day shaded by its cost or its tokens of one category
 - filter by date range, project directory or model
 - gnuplot renderer, displayed inline in kitty
 
@@ -35,6 +36,9 @@ sip --by session --since week
 
 # opus only, output and cache reads, for a single project
 sip --model opus --category out,cr --project sip
+
+# calendar of this year; days shaded by cost, or by output tokens with -c out
+sip --cal --since 2026-01-01
 
 # weekly usage as a PNG
 sip --by week --render gnuplot --output usage.png

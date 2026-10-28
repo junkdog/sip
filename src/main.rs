@@ -1,5 +1,6 @@
 mod aggregate;
 mod ansi;
+mod calendar;
 mod gnuplot;
 mod model;
 mod pricing;
@@ -27,9 +28,15 @@ struct Cli {
     #[arg(short, long, value_enum, default_value_t = GroupBy::Day)]
     by: GroupBy,
 
-    /// Categories to show (comma separated); all by default
+    /// Categories to show (comma separated); all by default. --calendar takes a single one and
+    /// shades by cost without it
     #[arg(short, long, value_enum, value_delimiter = ',')]
     category: Vec<Category>,
+
+    /// Show every month in range as a calendar, each day shaded by its cost (or by its tokens
+    /// of a single --category)
+    #[arg(long, visible_alias = "cal", conflicts_with_all = ["by", "limit", "render", "output"])]
+    calendar: bool,
 
     /// Only include usage since DATE (YYYY-MM-DD), today, week (from monday), month (from the 1st),
     /// the most recent day of week (mon..sun) or a relative span (12h, 7d, 2w)
@@ -115,12 +122,29 @@ fn main() -> Result<()> {
         .filter(|t| cli.model.as_ref().is_none_or(|m| t.model.contains(m.as_str())))
         .collect();
 
-    let mut rows = aggregate::aggregate(&data, &turns, cli.by);
-    if cli.limit > 0 && rows.len() > cli.limit {
-        rows.drain(..rows.len() - cli.limit);
-    }
+    let by = if cli.calendar { GroupBy::Day } else { cli.by };
+    let mut rows = aggregate::aggregate(&data, &turns, by);
     if rows.is_empty() {
         bail!("no token usage found in {}", dir.display());
+    }
+
+    let color = !cli.no_color && std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal();
+    let width = terminal_size::terminal_size().map_or(120, |(w, _)| w.0 as usize);
+    let style = ansi::Style { color, width };
+
+    if cli.calendar {
+        let metric = match cli.category.as_slice() {
+            [] => calendar::Metric::Cost,
+            [c] => calendar::Metric::Tokens(*c),
+            _ => bail!("--calendar shades by a single category"),
+        };
+        let range = calendar_range(&rows, since, until)?;
+        print!("{}", calendar::render(&rows, metric, range, &style));
+        return Ok(());
+    }
+
+    if cli.limit > 0 && rows.len() > cli.limit {
+        rows.drain(..rows.len() - cli.limit);
     }
 
     let categories = match cli.category.as_slice() {
@@ -130,11 +154,6 @@ fn main() -> Result<()> {
 
     match cli.render {
         Renderer::Ansi => {
-            let color = !cli.no_color
-                && std::env::var_os("NO_COLOR").is_none()
-                && std::io::stdout().is_terminal();
-            let width = terminal_size::terminal_size().map_or(120, |(w, _)| w.0 as usize);
-            let style = ansi::Style { color, width };
             print!("{}", ansi::render(&rows, &categories, cli.by, &style));
         }
         Renderer::Gnuplot => {
@@ -157,6 +176,24 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// First and last day (inclusive) of the calendar: those of `--since`/`--until` when given,
+/// otherwise from the first day with usage through today.
+fn calendar_range(
+    rows: &[aggregate::Row],
+    since: Option<Timestamp>,
+    until: Option<Timestamp>,
+) -> Result<(civil::Date, civil::Date)> {
+    let tz = TimeZone::system();
+    let date = |ts: Timestamp| ts.to_zoned(tz.clone()).date();
+    let first = date(since.unwrap_or(rows[0].start));
+    let last = match until {
+        // the bound is exclusive: a midnight ends the day before it
+        Some(u) => date(u.checked_sub(1.nanosecond())?),
+        None => date(Timestamp::now()).max(date(rows[rows.len() - 1].start)),
+    };
+    Ok((first, last))
 }
 
 /// `2026-09-01`, `today`, `week`, `month` or `mon`..`sun` (the most recent such day, today
