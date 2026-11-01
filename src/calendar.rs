@@ -9,7 +9,7 @@ use jiff::tz::TimeZone;
 use jiff::{Timestamp, ToSpan};
 
 use crate::aggregate::{Row, week_start};
-use crate::ansi::Style;
+use crate::ansi::{Style, fit};
 use crate::model::{Category, Rgb, gruvbox, human};
 
 /// What the shades measure.
@@ -100,6 +100,27 @@ pub fn render(rows: &[Row], metric: Metric, (first, last): (Date, Date), style: 
     }
     out.push_str(&cal.legend());
     out.push_str(&cal.summary());
+    // a month grid itself may be wider than the terminal
+    fit(&out, style.width)
+}
+
+/// `entries` (visible width, text) on as few lines as `width` allows, `sep` (likewise) between them.
+fn wrap(entries: Vec<(usize, String)>, (sep_w, sep): (usize, &str), width: usize) -> String {
+    let mut out = String::new();
+    let mut col = 0;
+    for (w, entry) in entries {
+        if col > 0 && col + sep_w + w > width {
+            out.push('\n');
+            col = 0;
+        }
+        if col > 0 {
+            out.push_str(sep);
+            col += sep_w;
+        }
+        out.push_str(&entry);
+        col += w;
+    }
+    out.push('\n');
     out
 }
 
@@ -196,36 +217,32 @@ impl Calendar<'_> {
             entries.push((8, style.paint(gruvbox::GRAY, "no usage")));
         }
 
-        let mut out = String::new();
-        let mut col = 0;
-        for (w, entry) in entries {
-            if col > 0 && col + 2 + w > self.style.width {
-                out.push('\n');
-                col = 0;
-            }
-            if col > 0 {
-                out.push_str("  ");
-                col += 2;
-            }
-            out.push_str(&entry);
-            col += w;
-        }
-        out.push('\n');
-        out
+        wrap(entries, (2, "  "), style.width)
     }
 
-    /// `12 of 30 days active, $420 total, peak $110 on Tue 2026-10-14`
+    /// `12 of 30 days active, $420 total, peak $110 on Tue 2026-10-14, today $12`, wrapped to
+    /// the terminal width; today's figure only when the range includes today.
     fn summary(&self) -> String {
         let style = self.style;
         let fmt = |v| self.metric.format(v);
         let (first, last) = self.range;
         let days = first.series(1.day()).take_while(|d| *d <= last).count();
         let total: u64 = self.usage.values().sum();
-        let mut s = format!("{} of {days} days active, {} total", self.usage.len(), fmt(total));
+
+        let mut parts = vec![format!("{} of {days} days active", self.usage.len()), format!("{} total", fmt(total))];
         if let Some((date, &peak)) = self.usage.iter().max_by_key(|&(d, v)| (*v, std::cmp::Reverse(*d))) {
-            s.push_str(&format!(", peak {} on {}", fmt(peak), date.strftime("%a %Y-%m-%d")));
+            parts.push(format!("peak {} on {}", fmt(peak), date.strftime("%a %Y-%m-%d")));
         }
-        style.paint(gruvbox::GRAY, &s) + "\n"
+        let mut entries: Vec<(usize, String)> =
+            parts.iter().map(|p| (p.chars().count(), style.paint(gruvbox::GRAY, p))).collect();
+        if (first..=last).contains(&self.today) {
+            let value = fmt(self.usage.get(&self.today).copied().unwrap_or(0));
+            let text = format!("{}{}", style.paint(gruvbox::GRAY, "today "), style.paint(self.color, &value));
+            entries.push(("today ".len() + value.chars().count(), text));
+        }
+
+        let sep = style.paint(gruvbox::GRAY, ", ");
+        wrap(entries, (2, &sep), style.width)
     }
 }
 

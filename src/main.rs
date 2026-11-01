@@ -129,7 +129,11 @@ fn main() -> Result<()> {
     }
 
     let color = !cli.no_color && std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal();
-    let width = terminal_size::terminal_size().map_or(120, |(w, _)| w.0 as usize);
+    // without a terminal on any std stream (e.g. under a pager), $COLUMNS when it is exported
+    let width = terminal_size::terminal_size()
+        .map(|(w, _)| w.0 as usize)
+        .or_else(|| std::env::var("COLUMNS").ok()?.parse().ok())
+        .unwrap_or(120);
     let style = ansi::Style { color, width };
 
     if cli.calendar {
