@@ -2,7 +2,7 @@
 //! single category. Shades are buckets bounded by quantiles of the active days, so skewed usage
 //! still spreads out.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use jiff::civil::Date;
 use jiff::tz::TimeZone;
@@ -65,12 +65,25 @@ pub fn render(rows: &[Row], metric: Metric, (first, last): (Date, Date), style: 
     let tz = TimeZone::system();
     let mut usage: HashMap<Date, u64> = HashMap::new();
     for row in rows {
-        *usage.entry(row.start.to_zoned(tz.clone()).date()).or_default() += metric.value(row);
+        *usage
+            .entry(row.start.to_zoned(tz.clone()).date())
+            .or_default() += metric.value(row);
     }
     usage.retain(|d, v| (first..=last).contains(d) && *v > 0);
+    // days whose cost leaves out calls to models without a known price
+    let unpriced: HashSet<Date> = match metric {
+        Metric::Cost => rows
+            .iter()
+            .filter(|r| r.unpriced > 0)
+            .map(|r| r.start.to_zoned(tz.clone()).date())
+            .filter(|d| (first..=last).contains(d))
+            .collect(),
+        Metric::Tokens(_) => HashSet::new(),
+    };
 
     let cal = Calendar {
         usage: &usage,
+        unpriced: &unpriced,
         range: (first, last),
         today: Timestamp::now().to_zoned(tz).date(),
         scale: Scale::new(usage.values().copied().collect()),
@@ -92,7 +105,10 @@ pub fn render(rows: &[Row], metric: Metric, (first, last): (Date, Date), style: 
         let grids: Vec<Vec<String>> = band.iter().map(|&m| cal.month(m)).collect();
         let height = grids.iter().map(Vec::len).max().unwrap_or(0);
         for i in 0..height {
-            let line: Vec<&str> = grids.iter().map(|g| g.get(i).unwrap_or(&blank).as_str()).collect();
+            let line: Vec<&str> = grids
+                .iter()
+                .map(|g| g.get(i).unwrap_or(&blank).as_str())
+                .collect();
             out.push_str(line.join(&" ".repeat(GAP)).trim_end());
             out.push('\n');
         }
@@ -126,6 +142,7 @@ fn wrap(entries: Vec<(usize, String)>, (sep_w, sep): (usize, &str), width: usize
 
 struct Calendar<'a> {
     usage: &'a HashMap<Date, u64>,
+    unpriced: &'a HashSet<Date>,
     range: (Date, Date),
     today: Date,
     scale: Scale,
@@ -139,10 +156,18 @@ impl Calendar<'_> {
     fn month(&self, first: Date) -> Vec<String> {
         let style = self.style;
         let last = first.last_of_month();
-        let total: u64 = first.series(1.day()).take_while(|d| *d <= last).filter_map(|d| self.usage.get(&d)).sum();
+        let total: u64 = first
+            .series(1.day())
+            .take_while(|d| *d <= last)
+            .filter_map(|d| self.usage.get(&d))
+            .sum();
 
         let name = first.strftime("%B %Y").to_string();
-        let total = if total > 0 { format!(" · {}", self.metric.format(total)) } else { String::new() };
+        let total = if total > 0 {
+            format!(" · {}", self.metric.format(total))
+        } else {
+            String::new()
+        };
         // centered over the grid, not counting the last glyph column
         let w = name.chars().count() + total.chars().count();
         let left = (MONTH_W - 1).saturating_sub(w) / 2;
@@ -156,7 +181,10 @@ impl Calendar<'_> {
         );
 
         let mut lines = vec![title, style.paint(gruvbox::FG4, "   Mo Tu We Th Fr Sa Su ")];
-        for monday in week_start(first).series(1.week()).take_while(|m| *m <= last) {
+        for monday in week_start(first)
+            .series(1.week())
+            .take_while(|m| *m <= last)
+        {
             let week = monday.iso_week_date().week();
             let mut line = style.paint(gruvbox::GRAY, &format!("{week:>2} "));
             for date in monday.series(1.day()).take(7) {
@@ -171,7 +199,8 @@ impl Calendar<'_> {
         lines
     }
 
-    /// `dd` on its shade, followed by the glyph column.
+    /// `dd` on its shade, followed by the glyph column: the shade's glyph without color, else
+    /// a `?` when the day's cost is a lower bound.
     fn day(&self, date: Date) -> String {
         let style = self.style;
         let (first, last) = self.range;
@@ -194,6 +223,7 @@ impl Calendar<'_> {
         }
         match level {
             Some(i) if !style.color => s.push(self.scale.glyph(i)),
+            _ if self.unpriced.contains(&date) => s.push_str(&style.paint(gruvbox::RED, "?")),
             _ => s.push(' '),
         }
         s
@@ -207,11 +237,18 @@ impl Calendar<'_> {
         for i in 0..self.scale.levels() {
             let label = self.scale.label(i, |v| self.metric.format(v));
             let swatch = if style.color {
-                format!("{}  {}", style.bg(self.scale.shade(i, self.color)), style.reset())
+                format!(
+                    "{}  {}",
+                    style.bg(self.scale.shade(i, self.color)),
+                    style.reset()
+                )
             } else {
                 self.scale.glyph(i).to_string().repeat(2)
             };
-            entries.push((3 + label.chars().count(), format!("{swatch} {}", style.paint(gruvbox::FG4, &label))));
+            entries.push((
+                3 + label.chars().count(),
+                format!("{swatch} {}", style.paint(gruvbox::FG4, &label)),
+            ));
         }
         if self.scale.levels() == 0 {
             entries.push((8, style.paint(gruvbox::GRAY, "no usage")));
@@ -229,16 +266,48 @@ impl Calendar<'_> {
         let days = first.series(1.day()).take_while(|d| *d <= last).count();
         let total: u64 = self.usage.values().sum();
 
-        let mut parts = vec![format!("{} of {days} days active", self.usage.len()), format!("{} total", fmt(total))];
-        if let Some((date, &peak)) = self.usage.iter().max_by_key(|&(d, v)| (*v, std::cmp::Reverse(*d))) {
-            parts.push(format!("peak {} on {}", fmt(peak), date.strftime("%a %Y-%m-%d")));
+        let mut parts = vec![
+            format!("{} of {days} days active", self.usage.len()),
+            format!("{} total", fmt(total)),
+        ];
+        if let Some((date, &peak)) = self
+            .usage
+            .iter()
+            .max_by_key(|&(d, v)| (*v, std::cmp::Reverse(*d)))
+        {
+            parts.push(format!(
+                "peak {} on {}",
+                fmt(peak),
+                date.strftime("%a %Y-%m-%d")
+            ));
         }
-        let mut entries: Vec<(usize, String)> =
-            parts.iter().map(|p| (p.chars().count(), style.paint(gruvbox::GRAY, p))).collect();
+        let mut entries: Vec<(usize, String)> = parts
+            .iter()
+            .map(|p| (p.chars().count(), style.paint(gruvbox::GRAY, p)))
+            .collect();
         if (first..=last).contains(&self.today) {
             let value = fmt(self.usage.get(&self.today).copied().unwrap_or(0));
-            let text = format!("{}{}", style.paint(gruvbox::GRAY, "today "), style.paint(self.color, &value));
+            let text = format!(
+                "{}{}",
+                style.paint(gruvbox::GRAY, "today "),
+                style.paint(self.color, &value)
+            );
             entries.push(("today ".len() + value.chars().count(), text));
+        }
+        if !self.unpriced.is_empty() {
+            let n = self.unpriced.len();
+            let days = if n == 1 {
+                "day includes"
+            } else {
+                "days include"
+            };
+            let note = format!(" {n} {days} calls without a known price");
+            let text = format!(
+                "{}{}",
+                style.paint(gruvbox::RED, "?"),
+                style.paint(gruvbox::GRAY, &note)
+            );
+            entries.push((1 + note.chars().count(), text));
         }
 
         let sep = style.paint(gruvbox::GRAY, ", ");
@@ -258,17 +327,29 @@ impl Scale {
         values.retain(|&v| v > 0);
         values.sort_unstable();
         let (Some(&min), Some(&max)) = (values.first(), values.last()) else {
-            return Self { bounds: Vec::new(), span: None };
+            return Self {
+                bounds: Vec::new(),
+                span: None,
+            };
         };
-        let mut bounds: Vec<u64> = (1..LEVELS).map(|k| round_sig(values[k * values.len() / LEVELS])).collect();
+        let mut bounds: Vec<u64> = (1..LEVELS)
+            .map(|k| round_sig(values[k * values.len() / LEVELS]))
+            .collect();
         bounds.dedup();
         // rounding may push a bound past either end, leaving its outer level empty
         bounds.retain(|&b| b > min && b <= max);
-        Self { bounds, span: Some((min, max)) }
+        Self {
+            bounds,
+            span: Some((min, max)),
+        }
     }
 
     fn levels(&self) -> usize {
-        if self.span.is_some() { self.bounds.len() + 1 } else { 0 }
+        if self.span.is_some() {
+            self.bounds.len() + 1
+        } else {
+            0
+        }
     }
 
     fn level(&self, value: u64) -> usize {
@@ -331,7 +412,11 @@ fn dollars(cents: u64) -> String {
 /// Dark text on bright shades, light text on dim ones.
 fn text_on(bg: Rgb) -> Rgb {
     let luma = 0.2126 * bg.0 as f64 + 0.7152 * bg.1 as f64 + 0.0722 * bg.2 as f64;
-    if luma > 110.0 { gruvbox::BG } else { gruvbox::FG }
+    if luma > 110.0 {
+        gruvbox::BG
+    } else {
+        gruvbox::FG
+    }
 }
 
 #[cfg(test)]
@@ -379,5 +464,56 @@ mod tests {
 
         let scale = Scale::new(vec![0, 0]);
         assert_eq!(scale.levels(), 0);
+    }
+
+    #[test]
+    fn unpriced_days_are_marked() {
+        let row = |day: &str, cost: f64, unpriced: usize| Row {
+            label: day.to_string(),
+            project: String::new(),
+            start: format!("{day}T12:00:00")
+                .parse::<jiff::civil::DateTime>()
+                .unwrap()
+                .to_zoned(TimeZone::system())
+                .unwrap()
+                .timestamp(),
+            tokens: crate::model::Tokens::default(),
+            turns: 10,
+            cost,
+            unpriced,
+            models: Vec::new(),
+            peak_context: 0,
+            window: None,
+        };
+        // a priced day, one with priced and unpriced calls, and one with unpriced calls only
+        let rows = [
+            row("2026-03-02", 4.0, 0),
+            row("2026-03-03", 2.0, 1),
+            row("2026-03-04", 0.0, 3),
+        ];
+        let range = ("2026-03-01".parse().unwrap(), "2026-03-31".parse().unwrap());
+        let style = Style {
+            color: true,
+            width: 80,
+        };
+        let out = render(&rows, Metric::Cost, range, &style);
+
+        let marked = |day: u8| {
+            out.contains(&format!(
+                "{day}{}{}",
+                style.reset(),
+                style.paint(gruvbox::RED, "?")
+            ))
+        };
+        assert!(!marked(2), "{out}");
+        assert!(marked(3), "{out}");
+        assert!(marked(4), "{out}");
+        assert!(
+            out.contains("2 days include calls without a known price"),
+            "{out}"
+        );
+
+        let out = render(&rows, Metric::Tokens(Category::Output), range, &style);
+        assert!(!out.contains("without a known price"), "{out}");
     }
 }

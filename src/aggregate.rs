@@ -65,7 +65,11 @@ struct Acc {
 
 pub fn aggregate(data: &Transcripts, turns: &[&Turn], by: GroupBy) -> Vec<Row> {
     let tz = TimeZone::system();
-    let launch_dirs = if by == GroupBy::Project { launch_dirs(data) } else { HashMap::new() };
+    let launch_dirs = if by == GroupBy::Project {
+        launch_dirs(data)
+    } else {
+        HashMap::new()
+    };
     let names = project_names(data.turns.iter().map(|t| t.cwd.as_str()));
     let mut groups: HashMap<String, Acc> = HashMap::new();
 
@@ -73,12 +77,18 @@ pub fn aggregate(data: &Transcripts, turns: &[&Turn], by: GroupBy) -> Vec<Row> {
         let key = match by {
             GroupBy::Day => turn.ts.to_zoned(tz.clone()).date().to_string(),
             GroupBy::Week => week_start(turn.ts.to_zoned(tz.clone()).date()).to_string(),
-            GroupBy::Project => names[launch_dirs.get(turn.session.as_str()).copied().unwrap_or(&turn.cwd)].clone(),
+            GroupBy::Project => names[launch_dirs
+                .get(turn.session.as_str())
+                .copied()
+                .unwrap_or(&turn.cwd)]
+            .clone(),
             GroupBy::Session => turn.session.clone(),
         };
 
         let acc = groups.entry(key).or_default();
-        *acc.projects.entry(names[turn.cwd.as_str()].clone()).or_default() += 1;
+        *acc.projects
+            .entry(names[turn.cwd.as_str()].clone())
+            .or_default() += 1;
         acc.start = Some(acc.start.map_or(turn.ts, |s| s.min(turn.ts)));
         acc.tokens += turn.tokens;
         acc.turns += 1;
@@ -110,11 +120,18 @@ pub fn aggregate(data: &Transcripts, turns: &[&Turn], by: GroupBy) -> Vec<Row> {
                     format!("W{:02} {key}", monday.iso_week_date().week())
                 }
                 GroupBy::Project => key,
-                GroupBy::Session => start.to_zoned(tz.clone()).strftime("%m-%d %H:%M").to_string(),
+                GroupBy::Session => start
+                    .to_zoned(tz.clone())
+                    .strftime("%m-%d %H:%M")
+                    .to_string(),
             };
             let mut models: Vec<_> = acc.models.into_iter().collect();
             models.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-            let (peak_context, window) = if acc.peak_main.0 > 0 { acc.peak_main } else { acc.peak_any };
+            let (peak_context, window) = if acc.peak_main.0 > 0 {
+                acc.peak_main
+            } else {
+                acc.peak_any
+            };
             Row {
                 label,
                 project: project_label(acc.projects, by),
@@ -145,12 +162,16 @@ fn window_for(data: &Transcripts, turn: &Turn, ctx: u64) -> u64 {
         .one_million
         .get(&turn.session)
         .is_some_and(|models| models.contains(&turn.model));
-    if flagged || ctx > DEFAULT_WINDOW { EXTENDED_WINDOW } else { DEFAULT_WINDOW }
+    if flagged || ctx > DEFAULT_WINDOW {
+        EXTENDED_WINDOW
+    } else {
+        DEFAULT_WINDOW
+    }
 }
 
 /// Session -> cwd of its earliest call, so turns made after a `cd` into a
 /// subdirectory still count towards the project the session was started in.
-fn launch_dirs(data: &Transcripts) -> HashMap<&str, &str> {
+pub fn launch_dirs(data: &Transcripts) -> HashMap<&str, &str> {
     let mut first: HashMap<&str, (Timestamp, &str)> = HashMap::new();
     for turn in &data.turns {
         let e = first.entry(&turn.session).or_insert((turn.ts, &turn.cwd));
@@ -188,7 +209,8 @@ fn project_names<'a>(cwds: impl Iterator<Item = &'a str>) -> HashMap<&'a str, St
 /// Monday of the ISO week containing `date`.
 pub fn week_start(date: civil::Date) -> civil::Date {
     let offset = date.weekday().since(Weekday::Monday);
-    date.checked_sub(i64::from(offset).days()).expect("date in range")
+    date.checked_sub(i64::from(offset).days())
+        .expect("date in range")
 }
 
 /// Sessions may `cd` around, so they take their most used project.
@@ -210,7 +232,14 @@ mod tests {
 
     #[test]
     fn project_names_disambiguate_shared_basenames() {
-        let cwds = ["/home/u/jvm/sift", "/home/u/rust/sift", "/home/u/rust/sip", "/home/u/rust/sip/", "/x/u/rust/sip", ""];
+        let cwds = [
+            "/home/u/jvm/sift",
+            "/home/u/rust/sift",
+            "/home/u/rust/sip",
+            "/home/u/rust/sip/",
+            "/x/u/rust/sip",
+            "",
+        ];
         let names = project_names(cwds.into_iter());
         assert_eq!(names["/home/u/jvm/sift"], "jvm/sift");
         assert_eq!(names["/home/u/rust/sift"], "rust/sift");

@@ -4,6 +4,7 @@
 use std::fmt::Write;
 
 use jiff::tz::TimeZone;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::aggregate::{GroupBy, Row};
 use crate::model::{Category, Rgb, Tokens, gruvbox, human};
@@ -35,11 +36,19 @@ pub struct Style {
 
 impl Style {
     pub fn fg(&self, c: Rgb) -> String {
-        if self.color { format!("\x1b[38;2;{};{};{}m", c.0, c.1, c.2) } else { String::new() }
+        if self.color {
+            format!("\x1b[38;2;{};{};{}m", c.0, c.1, c.2)
+        } else {
+            String::new()
+        }
     }
 
     pub fn bg(&self, c: Rgb) -> String {
-        if self.color { format!("\x1b[48;2;{};{};{}m", c.0, c.1, c.2) } else { String::new() }
+        if self.color {
+            format!("\x1b[48;2;{};{};{}m", c.0, c.1, c.2)
+        } else {
+            String::new()
+        }
     }
 
     pub fn bold(&self) -> &'static str {
@@ -60,9 +69,24 @@ impl Style {
 }
 
 pub fn render(rows: &[Row], categories: &[Category], by: GroupBy, style: &Style) -> String {
-    let label_w = rows.iter().map(|r| r.label.chars().count()).max().unwrap_or(0).max(5);
-    let project_w = rows.iter().map(|r| r.project.chars().count()).max().unwrap_or(0).min(20);
-    let model_w = rows.iter().map(|r| r.model_label().chars().count()).max().unwrap_or(0).max(5);
+    let label_w = rows
+        .iter()
+        .map(|r| cols(&r.label))
+        .max()
+        .unwrap_or(0)
+        .max(5);
+    let project_w = rows
+        .iter()
+        .map(|r| cols(&r.project))
+        .max()
+        .unwrap_or(0)
+        .min(20);
+    let model_w = rows
+        .iter()
+        .map(|r| cols(&r.model_label()))
+        .max()
+        .unwrap_or(0)
+        .max(5);
     let ctx_w = 9; // "1.0M/1.0M"
     let total_cost: f64 = rows.iter().map(|r| r.cost).sum();
     let cost_w = rows
@@ -87,17 +111,25 @@ pub fn render(rows: &[Row], categories: &[Category], by: GroupBy, style: &Style)
     if !names_are_labels {
         fixed += label_w + 2;
     }
-    let budget = style.width.saturating_sub(fixed + 2 + cells_w(categories.len(), SHRINK_BAR));
+    let budget = style
+        .width
+        .saturating_sub(fixed + 2 + cells_w(categories.len(), SHRINK_BAR));
     let name_w = natural_name_w.min(budget.max(MIN_NAME));
     if name_w > 0 {
         fixed += name_w + 2;
     }
-    let (label_w, project_w) = if names_are_labels { (name_w, project_w) } else { (label_w, name_w) };
+    let (label_w, project_w) = if names_are_labels {
+        (name_w, project_w)
+    } else {
+        (label_w, name_w)
+    };
 
     let room = style.width.saturating_sub(fixed) + 2;
     let shown = (room / (cell(MIN_BAR) + 2)).max(1).min(categories.len());
     let categories = &categories[..shown];
-    let bar_w = (room / shown.max(1)).saturating_sub(NUM_WIDTH + 3).clamp(MIN_BAR, MAX_BAR);
+    let bar_w = (room / shown.max(1))
+        .saturating_sub(NUM_WIDTH + 3)
+        .clamp(MIN_BAR, MAX_BAR);
 
     let max: Vec<u64> = categories
         .iter()
@@ -115,8 +147,16 @@ pub fn render(rows: &[Row], categories: &[Category], by: GroupBy, style: &Style)
     if project_w > 0 {
         let _ = write!(header, "{:project_w$}  ", "");
     }
-    let ctx_header = if rows.iter().any(|r| r.window.is_some()) { "context" } else { "peak ctx" };
-    let _ = write!(header, "{:model_w$}  {:>ctx_w$}  {:>cost_w$}  ", "model", ctx_header, "cost ");
+    let ctx_header = if rows.iter().any(|r| r.window.is_some()) {
+        "context"
+    } else {
+        "peak ctx"
+    };
+    let _ = write!(
+        header,
+        "{:model_w$}  {:>ctx_w$}  {:>cost_w$}  ",
+        "model", ctx_header, "cost "
+    );
     let head = header.clone();
     out.push_str(&style.paint(gruvbox::GRAY, &head));
     let cell_w = cell(bar_w);
@@ -129,7 +169,10 @@ pub fn render(rows: &[Row], categories: &[Category], by: GroupBy, style: &Style)
         let legend = " thinking";
         if c == Category::Output && label.len() + legend.len() <= cell_w {
             out.push_str(&style.paint(c.color(), label));
-            out.push_str(&style.paint(Category::thinking_color(), &format!("{legend:<w$}", w = cell_w - label.len())));
+            out.push_str(&style.paint(
+                Category::thinking_color(),
+                &format!("{legend:<w$}", w = cell_w - label.len()),
+            ));
         } else {
             let label = truncate(label, cell_w);
             out.push_str(&style.paint(c.color(), &format!("{label:<cell_w$}")));
@@ -142,19 +185,33 @@ pub fn render(rows: &[Row], categories: &[Category], by: GroupBy, style: &Style)
             let day = row.start.to_zoned(tz.clone()).date();
             if prev_day != Some(day) {
                 prev_day = Some(day);
-                out.push_str(&day_separator(&day.strftime("%a %Y-%m-%d").to_string(), table_w, style));
+                out.push_str(&day_separator(
+                    &day.strftime("%a %Y-%m-%d").to_string(),
+                    table_w,
+                    style,
+                ));
             }
         }
 
         if by == GroupBy::Project {
-            out.push_str(&project_cell(&truncate_start(&row.label, label_w), label_w, (gruvbox::GRAY, gruvbox::FG), style));
+            out.push_str(&project_cell(
+                &truncate_start(&row.label, label_w),
+                label_w,
+                (gruvbox::GRAY, gruvbox::FG),
+                style,
+            ));
         } else {
             out.push_str(&style.paint(gruvbox::FG, &format!("{:label_w$}", row.label)));
         }
         out.push_str("  ");
         if project_w > 0 {
             let name = truncate_start(&row.project, project_w);
-            out.push_str(&project_cell(&name, project_w, (gruvbox::NEUTRAL_PURPLE, gruvbox::PURPLE), style));
+            out.push_str(&project_cell(
+                &name,
+                project_w,
+                (gruvbox::NEUTRAL_PURPLE, gruvbox::PURPLE),
+                style,
+            ));
             out.push_str("  ");
         }
         out.push_str(&style.paint(gruvbox::FG4, &format!("{:model_w$}  ", row.model_label())));
@@ -168,7 +225,11 @@ pub fn render(rows: &[Row], categories: &[Category], by: GroupBy, style: &Style)
                 out.push_str("  ");
             }
             let v = row.tokens.get(c);
-            let thinking = if c == Category::Output { row.tokens.thinking() } else { 0 };
+            let thinking = if c == Category::Output {
+                row.tokens.thinking()
+            } else {
+                0
+            };
             out.push_str(&bar(v, thinking, m, bar_w, c.color(), style));
             out.push(' ');
             out.push_str(&style.paint(gruvbox::FG, &format!("{:>NUM_WIDTH$}", human(v))));
@@ -192,7 +253,8 @@ pub fn render(rows: &[Row], categories: &[Category], by: GroupBy, style: &Style)
         }
         let sum = human(total.get(c));
         let thinking = human(total.thinking());
-        if c == Category::Output && total.thinking() > 0 && thinking.len() + 1 + sum.len() <= cell_w {
+        if c == Category::Output && total.thinking() > 0 && thinking.len() + 1 + sum.len() <= cell_w
+        {
             let w = cell_w - sum.len() - 1;
             out.push_str(&style.paint(Category::thinking_color(), &format!("{thinking:>w$} ")));
             out.push_str(&style.paint(c.color(), &sum));
@@ -215,10 +277,18 @@ fn bar(value: u64, thinking: u64, max: u64, width: usize, color: Rgb, style: &St
     };
     let total = scale(value);
     // keep at least an eighth of the non-thinking output visible
-    let thinking = if thinking < value { scale(thinking).min(total.saturating_sub(1)) } else { total };
+    let thinking = if thinking < value {
+        scale(thinking).min(total.saturating_sub(1))
+    } else {
+        total
+    };
     let shade = Category::thinking_color();
     // without color, thinking is told apart by texture
-    let (solid, textured) = if style.color { ('█', '█') } else { ('█', '▓') };
+    let (solid, textured) = if style.color {
+        ('█', '█')
+    } else {
+        ('█', '▓')
+    };
 
     let mut s = String::new();
     let mut current = None;
@@ -232,7 +302,11 @@ fn bar(value: u64, thinking: u64, max: u64, width: usize, color: Rgb, style: &St
             (k, 8) if !style.color => (if k >= 4 { textured } else { solid }, shade, color),
             (k, 8) => (EIGHTHS[k], shade, color),
             // both segments end in this cell: the larger share takes it
-            (k, t) => (EIGHTHS[t], if 2 * k >= t { shade } else { color }, gruvbox::BG1),
+            (k, t) => (
+                EIGHTHS[t],
+                if 2 * k >= t { shade } else { color },
+                gruvbox::BG1,
+            ),
         };
         if current != Some((fg, bg)) {
             current = Some((fg, bg));
@@ -269,9 +343,13 @@ fn context_cell(row: &Row, width: usize, style: &Style) -> String {
 
 /// `rust/sift` with the disambiguating parent directories dimmer than the project directory.
 fn project_cell(name: &str, width: usize, (parent, dir): (Rgb, Rgb), style: &Style) -> String {
-    let pad = " ".repeat(width.saturating_sub(name.chars().count()));
+    let pad = " ".repeat(width.saturating_sub(cols(name)));
     match name.rsplit_once('/') {
-        Some((path, base)) => format!("{}{}{pad}", style.paint(parent, &format!("{path}/")), style.paint(dir, base)),
+        Some((path, base)) => format!(
+            "{}{}{pad}",
+            style.paint(parent, &format!("{path}/")),
+            style.paint(dir, base)
+        ),
         None => format!("{}{pad}", style.paint(dir, name)),
     }
 }
@@ -279,8 +357,15 @@ fn project_cell(name: &str, width: usize, (parent, dir): (Rgb, Rgb), style: &Sty
 /// `$12.34 ` or `$12.34?` when some calls couldn't be priced (so the figure is a lower bound).
 fn cost_cell(cost: f64, partial: bool, width: usize, style: &Style) -> String {
     let w = width - 1;
-    let mark = if partial { style.paint(gruvbox::RED, "?") } else { " ".to_string() };
-    format!("{}{mark}", style.paint(gruvbox::GREEN, &format!("{:>w$}", usd(cost))))
+    let mark = if partial {
+        style.paint(gruvbox::RED, "?")
+    } else {
+        " ".to_string()
+    };
+    format!(
+        "{}{mark}",
+        style.paint(gruvbox::GREEN, &format!("{:>w$}", usd(cost)))
+    )
 }
 
 fn utilization_color(ratio: f64) -> Rgb {
@@ -303,19 +388,41 @@ fn day_separator(date: &str, width: usize, style: &Style) -> String {
         "{}{}{}\n",
         style.paint(gruvbox::BG1.lerp(gruvbox::GRAY, 0.5), lead),
         style.paint(gruvbox::FG4, date),
-        style.paint(gruvbox::BG1.lerp(gruvbox::GRAY, 0.5), &format!(" {}", "─".repeat(tail)))
+        style.paint(
+            gruvbox::BG1.lerp(gruvbox::GRAY, 0.5),
+            &format!(" {}", "─".repeat(tail))
+        )
     )
 }
 
-/// `cache write` -> `cache w…`
+/// Terminal columns taken by `s`: two for wide characters such as CJK or emoji.
+fn cols(s: &str) -> usize {
+    s.width()
+}
+
+fn char_cols(ch: char) -> usize {
+    ch.width().unwrap_or(0)
+}
+
+/// The leading characters of `chars` that fit in `width` columns.
+fn take_cols(chars: impl Iterator<Item = char>, width: usize) -> Vec<char> {
+    let mut used = 0;
+    chars
+        .take_while(|&ch| {
+            used += char_cols(ch);
+            used <= width
+        })
+        .collect()
+}
+
+/// `cache write` -> `cache w…`; at most `width` columns.
 fn truncate(s: &str, width: usize) -> String {
-    let n = s.chars().count();
-    if n <= width {
+    if cols(s) <= width {
         s.to_string()
     } else if width == 0 {
         String::new()
     } else {
-        let mut t: String = s.chars().take(width - 1).collect();
+        let mut t: String = take_cols(s.chars(), width - 1).into_iter().collect();
         t.push('…');
         t
     }
@@ -323,15 +430,13 @@ fn truncate(s: &str, width: usize) -> String {
 
 /// `home/u/rust/sip` -> `…ust/sip`: project names are told apart by their end.
 fn truncate_start(s: &str, width: usize) -> String {
-    let n = s.chars().count();
-    if n <= width {
+    if cols(s) <= width {
         s.to_string()
     } else if width == 0 {
         String::new()
     } else {
-        let mut t = String::from('…');
-        t.extend(s.chars().skip(n - (width - 1)));
-        t
+        let tail = take_cols(s.chars().rev(), width - 1);
+        std::iter::once('…').chain(tail.into_iter().rev()).collect()
     }
 }
 
@@ -366,9 +471,10 @@ fn clip(line: &str, width: usize, out: &mut String) {
                     break;
                 }
             }
-        } else if col + 1 < width {
+        } else if col + char_cols(ch) < width {
+            // the cut always lands before the last column, which the `…` takes
             out.push(ch);
-            col += 1;
+            col += char_cols(ch);
         } else {
             if width > 0 {
                 out.push('…');
@@ -389,7 +495,7 @@ fn visible_width(s: &str) -> usize {
         if ch == '\x1b' {
             chars.by_ref().find(|c| c.is_ascii_alphabetic());
         } else {
-            n += 1;
+            n += char_cols(ch);
         }
     }
     n
@@ -404,11 +510,20 @@ mod tests {
             label: label.to_string(),
             project: project.to_string(),
             start: "2026-10-31T12:00:00Z".parse().unwrap(),
-            tokens: Tokens::new(300 * scale, 90_000 * scale, 250_000 * scale, 15_000_000 * scale, 40_000 * scale),
+            tokens: Tokens::new(
+                300 * scale,
+                90_000 * scale,
+                250_000 * scale,
+                15_000_000 * scale,
+                40_000 * scale,
+            ),
             turns: 120,
             cost: 6.8 * scale as f64,
             unpriced: 0,
-            models: vec![("claude-opus-5-5".to_string(), 100), ("claude-haiku-4-5".to_string(), 20)],
+            models: vec![
+                ("claude-opus-5-5".to_string(), 100),
+                ("claude-haiku-4-5".to_string(), 20),
+            ],
             peak_context: 287_000,
             window: Some(1_000_000),
         }
@@ -419,6 +534,7 @@ mod tests {
         let rows = [
             row("10-31 12:00", "home/u/some-rather-long-project-name", 1),
             row("10-31 14:30", "rust/sip", 3),
+            row("10-31 16:00", "home/u/日本語のプロジェクト", 2),
         ];
         for color in [false, true] {
             for width in 20..=220 {
@@ -426,7 +542,10 @@ mod tests {
                 for by in [GroupBy::Session, GroupBy::Project] {
                     let out = render(&rows, &Category::ALL, by, &style);
                     for line in out.lines() {
-                        assert!(visible_width(line) <= width, "{width} cols, {by:?}: {line:?}");
+                        assert!(
+                            visible_width(line) <= width,
+                            "{width} cols, {by:?}: {line:?}"
+                        );
                     }
                 }
             }
@@ -435,8 +554,20 @@ mod tests {
 
     #[test]
     fn project_names_give_way_before_categories() {
-        let rows = [row("10-31 12:00", "home/u/some-rather-long-project-name", 1)];
-        let out = render(&rows, &Category::ALL, GroupBy::Session, &Style { color: false, width: 100 });
+        let rows = [row(
+            "10-31 12:00",
+            "home/u/some-rather-long-project-name",
+            1,
+        )];
+        let out = render(
+            &rows,
+            &Category::ALL,
+            GroupBy::Session,
+            &Style {
+                color: false,
+                width: 100,
+            },
+        );
         assert!(out.contains("cache read"), "{out}");
         assert!(out.contains("…ct-name"), "{out}");
     }
@@ -447,6 +578,41 @@ mod tests {
         assert_eq!(truncate_start("home/u/rust/sip", 8), "…ust/sip");
         assert_eq!(truncate_start("sip", 8), "sip");
         assert_eq!(truncate_start("sip", 0), "");
+        // wide characters take two columns, and one that doesn't fit leaves its column blank
+        assert_eq!(truncate_start("u/日本語", 6), "…本語");
+        assert_eq!(truncate_start("u/日本語", 4), "…語");
+        assert_eq!(truncate("日本語", 4), "日…");
+    }
+
+    #[test]
+    fn wide_project_names_keep_columns_aligned() {
+        let rows = [
+            row("10-31 12:00", "rust/sip", 1),
+            row("10-31 16:00", "u/日本語", 2),
+        ];
+        let out = render(
+            &rows,
+            &Category::ALL,
+            GroupBy::Session,
+            &Style {
+                color: false,
+                width: 200,
+            },
+        );
+        // costs are right-aligned: compare where each figure ends
+        let cost_cols: Vec<usize> = out
+            .lines()
+            .filter_map(|line| {
+                let start = line.find('$')?;
+                let end = line[start..].find(' ').map_or(line.len(), |i| start + i);
+                Some(cols(&line[..end]))
+            })
+            .collect();
+        assert_eq!(cost_cols.len(), 3, "{out}");
+        assert!(
+            cost_cols.windows(2).all(|w| w[0] == w[1]),
+            "{cost_cols:?}\n{out}"
+        );
     }
 
     #[test]
@@ -455,5 +621,7 @@ mod tests {
         assert_eq!(fit(painted, 6), painted);
         assert_eq!(fit(painted, 4), "\x1b[38;2;1;2;3mabc…\x1b[0m\nok\n");
         assert_eq!(fit("abcdef", 4), "abc…");
+        assert_eq!(fit("ab日本語", 5), "ab日…");
+        assert_eq!(fit("ab日本語", 4), "ab…");
     }
 }

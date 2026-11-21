@@ -12,7 +12,11 @@ struct Price {
 impl Price {
     /// Cache reads default to a tenth of the input price.
     const fn new(input: f64, output: f64) -> Self {
-        Self { input, output, cache_read: input / 10.0 }
+        Self {
+            input,
+            output,
+            cache_read: input / 10.0,
+        }
     }
 
     const fn with_cache_read(self, cache_read: f64) -> Self {
@@ -58,5 +62,9 @@ fn price(model: &str) -> Option<Price> {
 
 /// `$0.42`, `$12.34`, `$1234`
 pub fn usd(v: f64) -> String {
-    if v < 1000.0 { format!("${v:.2}") } else { format!("${v:.0}") }
+    if v < 1000.0 {
+        format!("${v:.2}")
+    } else {
+        format!("${v:.0}")
+    }
 }

@@ -1,7 +1,6 @@
 mod aggregate;
 mod ansi;
 mod calendar;
-mod gnuplot;
 mod model;
 mod pricing;
 mod source;
@@ -11,7 +10,7 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
-use clap::{CommandFactory, Parser, ValueEnum};
+use clap::{CommandFactory, Parser};
 use clap_complete::env::Shells;
 use clap_complete::{ArgValueCandidates, CompleteEnv, CompletionCandidate, Shell};
 use jiff::tz::TimeZone;
@@ -35,7 +34,7 @@ struct Cli {
 
     /// Show every month in range as a calendar, each day shaded by its cost (or by its tokens
     /// of a single --category)
-    #[arg(long, visible_alias = "cal", conflicts_with_all = ["by", "limit", "render", "output"])]
+    #[arg(long, visible_alias = "cal", conflicts_with_all = ["by", "limit"])]
     calendar: bool,
 
     /// Only include usage since DATE (YYYY-MM-DD), today, week (from monday), month (from the 1st),
@@ -48,7 +47,7 @@ struct Cli {
     #[arg(long)]
     until: Option<String>,
 
-    /// Only include sessions whose working directory contains this string
+    /// Only include sessions started in a directory whose path contains this string
     #[arg(short, long)]
     project: Option<String>,
 
@@ -59,14 +58,6 @@ struct Cli {
     /// Show only the N most recent rows; 0 shows everything
     #[arg(short = 'n', long, default_value_t = 30)]
     limit: usize,
-
-    /// Renderer
-    #[arg(short, long, value_enum, default_value_t = Renderer::Ansi)]
-    render: Renderer,
-
-    /// PNG output path for the gnuplot renderer
-    #[arg(short, long, value_hint = clap::ValueHint::FilePath)]
-    output: Option<PathBuf>,
 
     /// Claude Code transcript directory [default: $CLAUDE_CONFIG_DIR/projects or ~/.claude/projects]
     #[arg(long, value_hint = clap::ValueHint::DirPath)]
@@ -79,12 +70,6 @@ struct Cli {
     /// Print a shell completion script and exit (e.g. `source <(sip --completions zsh)`)
     #[arg(long, value_name = "SHELL", exclusive = true)]
     completions: Option<Shell>,
-}
-
-#[derive(Clone, Copy, ValueEnum)]
-enum Renderer {
-    Ansi,
-    Gnuplot,
 }
 
 fn main() -> Result<()> {
@@ -109,26 +94,58 @@ fn main() -> Result<()> {
 
     let dir = cli.dir.clone().unwrap_or_else(source::default_dir);
     let data = source::load(&dir)?;
+    source::remember_models(&data);
 
-    let since = cli.since.as_deref().map(|s| parse_time(s, false)).transpose()?;
-    let until = cli.until.as_deref().map(|s| parse_time(s, true)).transpose()?;
+    let since = cli
+        .since
+        .as_deref()
+        .map(|s| parse_time(s, false))
+        .transpose()?;
+    let until = cli
+        .until
+        .as_deref()
+        .map(|s| parse_time(s, true))
+        .transpose()?;
 
+    if data.turns.is_empty() {
+        bail!("no token usage found in {}", dir.display());
+    }
+
+    // a session belongs to the project it was started in, as with --by project, even after a `cd`
+    let launch_dirs = if cli.project.is_some() {
+        aggregate::launch_dirs(&data)
+    } else {
+        Default::default()
+    };
     let turns: Vec<_> = data
         .turns
         .iter()
         .filter(|t| since.is_none_or(|s| t.ts >= s))
         .filter(|t| until.is_none_or(|u| t.ts < u))
-        .filter(|t| cli.project.as_ref().is_none_or(|p| t.cwd.contains(p.as_str())))
-        .filter(|t| cli.model.as_ref().is_none_or(|m| t.model.contains(m.as_str())))
+        .filter(|t| {
+            cli.project.as_ref().is_none_or(|p| {
+                let dir = launch_dirs
+                    .get(t.session.as_str())
+                    .copied()
+                    .unwrap_or(t.cwd.as_str());
+                dir.contains(p.as_str())
+            })
+        })
+        .filter(|t| {
+            cli.model
+                .as_ref()
+                .is_none_or(|m| t.model.contains(m.as_str()))
+        })
         .collect();
 
     let by = if cli.calendar { GroupBy::Day } else { cli.by };
     let mut rows = aggregate::aggregate(&data, &turns, by);
     if rows.is_empty() {
-        bail!("no token usage found in {}", dir.display());
+        bail!("no token usage matches --since, --until, --project or --model");
     }
 
-    let color = !cli.no_color && std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal();
+    let color =
+        !cli.no_color && std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal();
     // without a terminal on any std stream (e.g. under a pager), $COLUMNS when it is exported
     let width = terminal_size::terminal_size()
         .map(|(w, _)| w.0 as usize)
@@ -156,29 +173,7 @@ fn main() -> Result<()> {
         c => c.to_vec(),
     };
 
-    match cli.render {
-        Renderer::Ansi => {
-            print!("{}", ansi::render(&rows, &categories, cli.by, &style));
-        }
-        Renderer::Gnuplot => {
-            let output = cli.output.clone().unwrap_or_else(gnuplot::default_output);
-            let title = match cli.by {
-                GroupBy::Day => "Claude Code token usage per day",
-                GroupBy::Week => "Claude Code token usage per week",
-                GroupBy::Session => "Claude Code token usage per session",
-                GroupBy::Project => "Claude Code token usage per project",
-            };
-            // only the throwaway inline image goes transparent; files written with -o keep the background
-            let inline = gnuplot::can_display_inline();
-            let transparent = inline && cli.output.is_none();
-            gnuplot::render(&rows, &categories, &output, title, transparent)?;
-            if inline {
-                gnuplot::display_inline(&output)?;
-            } else {
-                println!("{}", output.display());
-            }
-        }
-    }
+    print!("{}", ansi::render(&rows, &categories, cli.by, &style));
     Ok(())
 }
 
@@ -243,13 +238,22 @@ fn parse_time(s: &str, end: bool) -> Result<Timestamp> {
     Ok(now.checked_sub(hours.hours())?.timestamp())
 }
 
-/// `--model` completions: the distinct models in the default transcript directory (`--dir` is
-/// not visible to completers).
+/// `--model` completions: the models recorded by earlier runs, or before the first one, those in
+/// the default transcript directory (`--dir` is not visible to completers).
 fn model_candidates() -> Vec<CompletionCandidate> {
-    let Ok(data) = source::load(&source::default_dir()) else {
-        return Vec::new();
+    let models = match source::cached_models() {
+        Some(models) => models,
+        None => {
+            let Ok(data) = source::load(&source::default_dir()) else {
+                return Vec::new();
+            };
+            source::remember_models(&data);
+            data.turns
+                .into_iter()
+                .map(|t| t.model)
+                .collect::<BTreeSet<_>>()
+        }
     };
-    let models: BTreeSet<String> = data.turns.into_iter().map(|t| t.model).collect();
     models.into_iter().map(CompletionCandidate::new).collect()
 }
 

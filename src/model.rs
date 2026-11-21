@@ -10,7 +10,10 @@ pub struct Tokens {
 
 impl Tokens {
     pub fn new(input: u64, output: u64, cache_write: u64, cache_read: u64, thinking: u64) -> Self {
-        Self { counts: [input, output, cache_write, cache_read], thinking: thinking.min(output) }
+        Self {
+            counts: [input, output, cache_write, cache_read],
+            thinking: thinking.min(output),
+        }
     }
 
     pub fn get(&self, category: Category) -> u64 {
@@ -29,7 +32,10 @@ impl Tokens {
 
 impl std::ops::AddAssign for Tokens {
     fn add_assign(&mut self, rhs: Self) {
-        self.counts.iter_mut().zip(rhs.counts).for_each(|(a, b)| *a += b);
+        self.counts
+            .iter_mut()
+            .zip(rhs.counts)
+            .for_each(|(a, b)| *a += b);
         self.thinking += rhs.thinking;
     }
 }
@@ -82,14 +88,15 @@ impl Category {
 pub struct Rgb(pub u8, pub u8, pub u8);
 
 impl Rgb {
-    pub fn hex(self) -> String {
-        format!("#{:02x}{:02x}{:02x}", self.0, self.1, self.2)
-    }
-
     /// Linear blend towards `other`; `t` in `0.0..=1.0`.
     pub fn lerp(self, other: Rgb, t: f64) -> Rgb {
-        let mix = |a: u8, b: u8| (a as f64 + (b as f64 - a as f64) * t.clamp(0.0, 1.0)).round() as u8;
-        Rgb(mix(self.0, other.0), mix(self.1, other.1), mix(self.2, other.2))
+        let mix =
+            |a: u8, b: u8| (a as f64 + (b as f64 - a as f64) * t.clamp(0.0, 1.0)).round() as u8;
+        Rgb(
+            mix(self.0, other.0),
+            mix(self.1, other.1),
+            mix(self.2, other.2),
+        )
     }
 }
 

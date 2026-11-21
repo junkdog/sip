@@ -3,7 +3,7 @@
 Visualize [Claude Code](https://claude.com/claude-code) token usage from your local session transcripts.
 
 `sip` reads the JSONL transcripts under `~/.claude/projects`, deduplicates API calls, and
-renders token usage as ANSI bar charts in the terminal, or as a PNG via gnuplot.
+renders token usage as ANSI bar charts in the terminal.
 
 ![sip --by=session --since=today](sip-screenshot.png)
 
@@ -15,15 +15,12 @@ renders token usage as ANSI bar charts in the terminal, or as a PNG via gnuplot.
 - estimated cost based on Anthropic API list prices
 - calendar view of the months in range, each day shaded by its cost or its tokens of one category
 - filter by date range, project directory or model
-- gnuplot renderer, displayed inline in kitty
 
 ## Install
 
 ```zsh
 cargo install --path .
 ```
-
-The gnuplot renderer requires `gnuplot` on your `PATH`.
 
 ## Usage
 
@@ -39,9 +36,6 @@ sip --model opus --category out,cr --project sip
 
 # calendar of this year; days shaded by cost, or by output tokens with -c out
 sip --cal --since 2026-01-01
-
-# weekly usage as a PNG
-sip --by week --render gnuplot --output usage.png
 ```
 
 `--since` and `--until` accept a date (`2026-09-01`), `today`, `week`, `month`, a day of the
@@ -75,14 +69,17 @@ rsync -a ~/.claude/projects/ ~/claude-archive/projects/
 sip --dir ~/claude-archive/projects
 ```
 
-Point `--dir` at one copy of each transcript only: API calls are deduplicated within a
-transcript file, not across files, so a session present in two places is counted twice.
+API calls are deduplicated across all transcripts under `--dir`, so a session copied into
+it twice still counts once.
 
 ### Shell completions
 
 ```zsh
 source <(sip --completions zsh)
 ```
+
+`--model` completes the models seen by earlier runs, recorded in `$XDG_CACHE_HOME/sip/models`
+(`~/.cache/sip/models` by default), so completion doesn't reread every transcript.
 
 ## License
 
