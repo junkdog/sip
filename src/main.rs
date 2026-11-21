@@ -6,7 +6,7 @@ mod pricing;
 mod source;
 
 use std::collections::BTreeSet;
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
@@ -124,10 +124,7 @@ fn main() -> Result<()> {
         .filter(|t| until.is_none_or(|u| t.ts < u))
         .filter(|t| {
             cli.project.as_ref().is_none_or(|p| {
-                let dir = launch_dirs
-                    .get(t.session.as_str())
-                    .copied()
-                    .unwrap_or(t.cwd.as_str());
+                let dir = launch_dirs.get(&*t.session).copied().unwrap_or(&t.cwd);
                 dir.contains(p.as_str())
             })
         })
@@ -161,7 +158,7 @@ fn main() -> Result<()> {
         };
         let range = calendar_range(&rows, since, until)?;
         print!("{}", calendar::render(&rows, metric, range, &style));
-        return Ok(());
+        return finish();
     }
 
     if cli.limit > 0 && rows.len() > cli.limit {
@@ -174,7 +171,14 @@ fn main() -> Result<()> {
     };
 
     print!("{}", ansi::render(&rows, &categories, cli.by, &style));
-    Ok(())
+    finish()
+}
+
+/// Exits without running destructors: freeing every parsed call would only take time.
+fn finish() -> Result<()> {
+    // flushed here rather than at exit, where a failed write would go unreported
+    std::io::stdout().flush()?;
+    std::process::exit(0)
 }
 
 /// First and last day (inclusive) of the calendar: those of `--since`/`--until` when given,
@@ -250,7 +254,7 @@ fn model_candidates() -> Vec<CompletionCandidate> {
             source::remember_models(&data);
             data.turns
                 .into_iter()
-                .map(|t| t.model)
+                .map(|t| t.model.to_string())
                 .collect::<BTreeSet<_>>()
         }
     };

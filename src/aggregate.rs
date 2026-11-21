@@ -1,9 +1,8 @@
-use std::collections::{HashMap, HashSet};
-
 use clap::ValueEnum;
 use jiff::civil::{self, Weekday};
 use jiff::tz::TimeZone;
 use jiff::{Timestamp, ToSpan};
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::model::{Tokens, short_model};
 use crate::source::{Transcripts, Turn};
@@ -51,16 +50,23 @@ impl Row {
 }
 
 #[derive(Default)]
-struct Acc {
-    projects: HashMap<String, usize>,
+struct Acc<'a> {
+    projects: FxHashMap<&'a str, usize>,
     start: Option<Timestamp>,
     tokens: Tokens,
     turns: usize,
     cost: f64,
     unpriced: usize,
-    models: HashMap<String, usize>,
+    models: FxHashMap<&'a str, usize>,
     peak_main: (u64, u64),
     peak_any: (u64, u64),
+}
+
+/// What a row groups by: the day (or the monday of the week), else the project name or session id.
+#[derive(PartialEq, Eq, Hash)]
+enum Key<'a> {
+    Date(civil::Date),
+    Name(&'a str),
 }
 
 pub fn aggregate(data: &Transcripts, turns: &[&Turn], by: GroupBy) -> Vec<Row> {
@@ -68,27 +74,27 @@ pub fn aggregate(data: &Transcripts, turns: &[&Turn], by: GroupBy) -> Vec<Row> {
     let launch_dirs = if by == GroupBy::Project {
         launch_dirs(data)
     } else {
-        HashMap::new()
+        FxHashMap::default()
     };
-    let names = project_names(data.turns.iter().map(|t| t.cwd.as_str()));
-    let mut groups: HashMap<String, Acc> = HashMap::new();
+    let names = project_names(data.turns.iter().map(|t| &*t.cwd));
+    let mut groups: FxHashMap<Key, Acc> = FxHashMap::default();
+    let mut days = Days::default();
 
     for turn in turns {
         let key = match by {
-            GroupBy::Day => turn.ts.to_zoned(tz.clone()).date().to_string(),
-            GroupBy::Week => week_start(turn.ts.to_zoned(tz.clone()).date()).to_string(),
-            GroupBy::Project => names[launch_dirs
-                .get(turn.session.as_str())
-                .copied()
-                .unwrap_or(&turn.cwd)]
-            .clone(),
-            GroupBy::Session => turn.session.clone(),
+            GroupBy::Day => Key::Date(days.date(turn.ts, &tz)),
+            GroupBy::Week => Key::Date(week_start(days.date(turn.ts, &tz))),
+            GroupBy::Project => Key::Name(
+                &names[launch_dirs
+                    .get(&*turn.session)
+                    .copied()
+                    .unwrap_or(&turn.cwd)],
+            ),
+            GroupBy::Session => Key::Name(&turn.session),
         };
 
         let acc = groups.entry(key).or_default();
-        *acc.projects
-            .entry(names[turn.cwd.as_str()].clone())
-            .or_default() += 1;
+        *acc.projects.entry(&names[&*turn.cwd]).or_default() += 1;
         acc.start = Some(acc.start.map_or(turn.ts, |s| s.min(turn.ts)));
         acc.tokens += turn.tokens;
         acc.turns += 1;
@@ -96,7 +102,7 @@ pub fn aggregate(data: &Transcripts, turns: &[&Turn], by: GroupBy) -> Vec<Row> {
             Some(c) => acc.cost += c,
             None => acc.unpriced += 1,
         }
-        *acc.models.entry(turn.model.clone()).or_default() += 1;
+        *acc.models.entry(&turn.model).or_default() += 1;
 
         let ctx = turn.tokens.context();
         let window = window_for(data, turn, ctx);
@@ -112,20 +118,23 @@ pub fn aggregate(data: &Transcripts, turns: &[&Turn], by: GroupBy) -> Vec<Row> {
         .into_iter()
         .map(|(key, acc)| {
             let start = acc.start.expect("group has at least one turn");
-            let label = match by {
-                GroupBy::Day => key,
+            let label = match (by, key) {
                 // keyed by the week's monday: `W40 2026-09-28`
-                GroupBy::Week => {
-                    let monday: civil::Date = key.parse().expect("week key is a date");
-                    format!("W{:02} {key}", monday.iso_week_date().week())
+                (GroupBy::Week, Key::Date(monday)) => {
+                    format!("W{:02} {monday}", monday.iso_week_date().week())
                 }
-                GroupBy::Project => key,
-                GroupBy::Session => start
+                (GroupBy::Session, _) => start
                     .to_zoned(tz.clone())
                     .strftime("%m-%d %H:%M")
                     .to_string(),
+                (_, Key::Date(day)) => day.to_string(),
+                (_, Key::Name(project)) => project.to_string(),
             };
-            let mut models: Vec<_> = acc.models.into_iter().collect();
+            let mut models: Vec<_> = acc
+                .models
+                .into_iter()
+                .map(|(m, n)| (m.to_string(), n))
+                .collect();
             models.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
             let (peak_context, window) = if acc.peak_main.0 > 0 {
                 acc.peak_main
@@ -160,8 +169,8 @@ pub fn aggregate(data: &Transcripts, turns: &[&Turn], by: GroupBy) -> Vec<Row> {
 fn window_for(data: &Transcripts, turn: &Turn, ctx: u64) -> u64 {
     let flagged = data
         .one_million
-        .get(&turn.session)
-        .is_some_and(|models| models.contains(&turn.model));
+        .get(&*turn.session)
+        .is_some_and(|models| models.contains(&*turn.model));
     if flagged || ctx > DEFAULT_WINDOW {
         EXTENDED_WINDOW
     } else {
@@ -171,8 +180,8 @@ fn window_for(data: &Transcripts, turn: &Turn, ctx: u64) -> u64 {
 
 /// Session -> cwd of its earliest call, so turns made after a `cd` into a
 /// subdirectory still count towards the project the session was started in.
-pub fn launch_dirs(data: &Transcripts) -> HashMap<&str, &str> {
-    let mut first: HashMap<&str, (Timestamp, &str)> = HashMap::new();
+pub fn launch_dirs(data: &Transcripts) -> FxHashMap<&str, &str> {
+    let mut first: FxHashMap<&str, (Timestamp, &str)> = FxHashMap::default();
     for turn in &data.turns {
         let e = first.entry(&turn.session).or_insert((turn.ts, &turn.cwd));
         if turn.ts < e.0 {
@@ -184,9 +193,9 @@ pub fn launch_dirs(data: &Transcripts) -> HashMap<&str, &str> {
 
 /// Cwd -> project name: its basename, prefixed with as many parent directories as it takes
 /// to tell it apart from every other cwd, e.g. `jvm/sift` and `rust/sift`.
-fn project_names<'a>(cwds: impl Iterator<Item = &'a str>) -> HashMap<&'a str, String> {
+fn project_names<'a>(cwds: impl Iterator<Item = &'a str>) -> FxHashMap<&'a str, String> {
     let cwds: Vec<(&str, Vec<&str>)> = cwds
-        .collect::<HashSet<_>>()
+        .collect::<FxHashSet<_>>()
         .into_iter()
         .map(|cwd| (cwd, cwd.rsplit('/').filter(|s| !s.is_empty()).collect()))
         .collect();
@@ -214,16 +223,41 @@ pub fn week_start(date: civil::Date) -> civil::Date {
 }
 
 /// Sessions may `cd` around, so they take their most used project.
-fn project_label(projects: HashMap<String, usize>, by: GroupBy) -> String {
+fn project_label(projects: FxHashMap<&str, usize>, by: GroupBy) -> String {
     // project rows already carry the name as their label
     if by == GroupBy::Project || (by != GroupBy::Session && projects.len() > 1) {
         return String::new();
     }
     projects
         .into_iter()
-        .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)))
-        .map(|(p, _)| p)
+        .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(a.0)))
+        .map(|(p, _)| p.to_string())
         .unwrap_or_default()
+}
+
+/// The local date of each timestamp, remembering the bounds of the last day it saw: calls come
+/// in time order, so most fall on the same day as the one before.
+#[derive(Default)]
+struct Days {
+    last: Option<(Timestamp, Timestamp, civil::Date)>,
+}
+
+impl Days {
+    fn date(&mut self, ts: Timestamp, tz: &TimeZone) -> civil::Date {
+        if let Some((start, end, date)) = self.last
+            && start <= ts
+            && ts < end
+        {
+            return date;
+        }
+        let date = ts.to_zoned(tz.clone()).date();
+        // a day that can't be bounded (at the edge of the supported range) just isn't remembered
+        let midnight = |d: civil::Date| Some(d.to_zoned(tz.clone()).ok()?.timestamp());
+        self.last = midnight(date)
+            .zip(date.tomorrow().ok().and_then(midnight))
+            .map(|(start, end)| (start, end, date));
+        date
+    }
 }
 
 #[cfg(test)]
